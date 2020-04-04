@@ -14,43 +14,36 @@
 
 #define MAX_FIFO_COUNT (10)
 
-struct MyFIFO_t {
-  int size;
-  int start;
-  int end;
-  uint16_t write_count;
-  uint16_t read_count;
-  uint8_t data[MAX_FIFO_COUNT];
-} MyFIFO;
+int fifoWp;
+int fifoRp;
+uint8_t fifoBuf[MAX_FIFO_COUNT];
 
 void fifo_init() {
-  MyFIFO.size = MAX_FIFO_COUNT;
-  MyFIFO.start = 0;
-  MyFIFO.end = 0;
-  MyFIFO.read_count = 0;
-  MyFIFO.write_count = 0;
+  fifoWp = 1;
+  fifoRp = 0;
 }
 
-void fifo_write(uint8_t d) {
-  // full
-  if ((MyFIFO.write_count - MyFIFO.read_count) == MyFIFO.size)
+void fifo_write(uint8_t v) {
+  if (fifoWp == fifoRp) {
+    // full
     return;
-  MyFIFO.data[MyFIFO.end] = d;
-  MyFIFO.write_count++;
-  MyFIFO.end = (MyFIFO.end + 1) % MyFIFO.size;
+  }
+  fifoBuf[fifoWp] = v;
+  fifoWp = (fifoWp + 1) % MAX_FIFO_COUNT;
 }
 
 uint8_t fifo_read() {
-  uint8_t d;
-  // empty
-  if ((MyFIFO.write_count - MyFIFO.read_count) == 0) {
-    // return MyFIFO.data[(MyFIFO.size + MyFIFO.start - 1) % MyFIFO.size];
-    return 128;
+  int next;
+  next = (fifoRp + 1) % MAX_FIFO_COUNT;
+  if (next == fifoWp) { /* empty */
+    return fifoBuf[fifoRp];
   }
-  d = MyFIFO.data[MyFIFO.start];
-  MyFIFO.read_count++;
-  MyFIFO.start = (MyFIFO.start + 1) % MyFIFO.size;
-  return d;
+  fifoRp = next;
+  return fifoBuf[fifoRp];
+}
+
+int fifo_isFull() {
+  return (fifoRp == fifoWp) ? 1 : 0;
 }
 
 uint16_t const Fs = 14000;
@@ -65,7 +58,7 @@ ISR(TIM0_COMPA_vect)
 
 void i2c_clock_with_0(void) {
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(5); /* wait 35(7*5) CPU cycle -- Data input hold time */
+  _delay_loop_1(5); /* wait 15(5*3) CPU cycle -- Data input hold time */
   PORTB &= ~(1<<DDB0); /* SDA: 0 */
   _delay_loop_1(2); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
@@ -74,7 +67,7 @@ void i2c_clock_with_0(void) {
 
 void i2c_clock_with_1(void) {
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(5); /* wait 35(7*5) CPU cycle -- Data input hold time */
+  _delay_loop_1(5); /* wait 15(5*3) CPU cycle -- Data input hold time */
   PORTB |= (1<<DDB0); /* SDA: 1 */
   _delay_loop_1(2); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
@@ -83,21 +76,29 @@ void i2c_clock_with_1(void) {
 
 void i2c_clock_with_read_ack(void) {
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(7); /* wait 35(7*5) CPU cycle -- Data input hold time */
+  DDRB &= ~(1<<DDB0); /* INPUT */
+  PORTB &= ~(1<<DDB0); /* NO PULLUP */
+  _delay_loop_1(7); /* wait 21(7*3) CPU cycle */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(5); /* Clock HIGH time */
-  if (((1<<DDB0) & PORTB) == (1<<DDB0)) {
+  if (((1<<PINB0) & PINB) != 0) {
     PORTB |= (1<<DDB3); /* ERROR */
   }
-  _delay_loop_1(2); /* Clock HIGH time */
+  DDRB |= (1<<DDB0); /* OUTPUT */
+  _delay_loop_1(7); /* Clock HIGH time */
 }
 
 uint8_t i2c_clock_with_read_1bit(void) {
+  uint8_t bit;
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(7); /* wait 35(7*5) CPU cycle -- Data input hold time */
+  DDRB &= ~(1<<DDB0); /* INPUT */
+  PORTB &= ~(1<<DDB0); /* NO PULLUP */
+  _delay_loop_1(7); /* wait 21(7*3) CPU cycle -- Data input hold time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(7); /* Clock HIGH time */
-  return (PORTB & (1<<DDB0)) ? 1 : 0;
+  _delay_loop_1(5); /* Clock HIGH time */
+  bit = ((PINB & (1<<PINB0)) != 0) ? 1 : 0;
+  _delay_loop_1(2);
+  DDRB |= (1<<DDB0); /* OUTPUT */
+  return bit;
 }
 
 int main(void)
@@ -136,7 +137,7 @@ int main(void)
   _delay_loop_1(14); /* wait 42(14*3) CPU cycle */
 
   PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
-  _delay_loop_1(7); /* wait 21(7*3) CPU cycle -- 1312.5us */
+  _delay_loop_1(14); /* wait 42(14*3) CPU cycle -- 1312.5us */
 
   i2c_clock_with_1();
   i2c_clock_with_0();
@@ -177,9 +178,9 @@ int main(void)
   PORTB |= (1<<DDB0); /* SDA: 1 */
   _delay_loop_1(2); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(7); /* Clock HIGH time */
+  _delay_loop_1(14); /* Clock HIGH time */
   PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
-  _delay_loop_1(7); /* wait 21(7*3) CPU cycle -- 1312.5us */
+  _delay_loop_1(14); /* wait 42(14*3) CPU cycle -- 2625us */
 
   i2c_clock_with_1();
   i2c_clock_with_0();
@@ -195,7 +196,9 @@ int main(void)
 
   sei();
 
-  for (uint16_t i = 44; i < 63394 - 1; ++i) {
+  /* 63394 bytes (header 44 bytes) */
+  for (uint16_t i = 44; i < 63393; ++i) {
+    cli();
     chunk = 0b00000000;
     chunk |= i2c_clock_with_read_1bit() << 7;
     chunk |= i2c_clock_with_read_1bit() << 6;
@@ -209,8 +212,20 @@ int main(void)
     fifo_write(chunk);
 
     i2c_clock_with_0();
-    
-    while ((MyFIFO.write_count - MyFIFO.read_count) >= MyFIFO.size); /* Busy wait */
+
+    sei();
+    if (chunk != 0) {
+      PORTB |= (1<<DDB3);
+    }
+
+    while (fifo_isFull()); /* Busy wait */
+    /*
+    for (uint16_t j = 0; j < 60; j++) {
+      __asm__ __volatile__ ("nop");
+    }
+    */
+
+    PORTB &= ~(1<<DDB3);
   }
 
   chunk = 0b00000000;
@@ -225,8 +240,6 @@ int main(void)
   
   i2c_clock_with_1();
 
-  while ((MyFIFO.write_count - MyFIFO.read_count) != 0); /* Busy wait */
-
   PORTB &= ~(1<<DDB2); /* Clock LOW */
   _delay_loop_1(5); /* wait 35(7*5) CPU cycle -- Data input hold time */
   PORTB &= ~(1<<DDB0); /* SDA: 0 */
@@ -236,7 +249,7 @@ int main(void)
   PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
   _delay_loop_1(7); /* wait 21(7*3) CPU cycle -- 1312.5us */
 
-  PORTB &= ~(1<<DDB3);
+  PORTB |= (1<<DDB3);
 
   return 0;
 }
