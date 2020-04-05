@@ -10,7 +10,16 @@
 #include <avr/io.h>
 #include <avr/iotn85.h>
 #include <avr/interrupt.h>
-#include <util/delay_basic.h>
+#include <util/delay.h>
+
+#define FULL_CLOCK          (6)
+#define HALF_CLOCK          (3)
+
+#define WAIT_FOR_CHANGE_SDA (2)
+#define WAIT_FOR_SCL_UP     (1)
+
+#define WAIT_FOR_RISETIME   (1)
+#define WAIT_FOR_SCL_DOWN   (2)
 
 #define MAX_FIFO_COUNT (10)
 
@@ -58,46 +67,53 @@ ISR(TIM0_COMPA_vect)
 
 void i2c_clock_with_0(void) {
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(5); /* wait 15(5*3) CPU cycle -- Data input hold time */
+  DDRB |= (1<<DDB0); /* OUTPUT */
+  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 15(5*3) CPU cycle -- Data input hold time */
   PORTB &= ~(1<<DDB0); /* SDA: 0 */
-  _delay_loop_1(2); /* wait -- Data input setup time */
+  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(7); /* Clock HIGH time */
+  _delay_loop_1(HALF_CLOCK); /* Clock HIGH time */
 }
 
 void i2c_clock_with_1(void) {
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(5); /* wait 15(5*3) CPU cycle -- Data input hold time */
+  DDRB |= (1<<DDB0); /* OUTPUT */
+  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 15(5*3) CPU cycle -- Data input hold time */
   PORTB |= (1<<DDB0); /* SDA: 1 */
-  _delay_loop_1(2); /* wait -- Data input setup time */
+  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(7); /* Clock HIGH time */
+  _delay_us(HALF_CLOCK); /* Clock HIGH time */
 }
 
 void i2c_clock_with_read_ack(void) {
   PORTB &= ~(1<<DDB2); /* Clock LOW */
   DDRB &= ~(1<<DDB0); /* INPUT */
-  PORTB &= ~(1<<DDB0); /* NO PULLUP */
-  _delay_loop_1(7); /* wait 21(7*3) CPU cycle */
+  PORTB |= (1<<DDB0); /* ENABLE PULLUP */
+  _delay_us(HALF_CLOCK); /* wait 21(7*3) CPU cycle */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  if (((1<<PINB0) & PINB) != 0) {
-    PORTB |= (1<<DDB3); /* ERROR */
+  _delay_us(WAIT_FOR_RISETIME);
+  if ( ((1<<PINB2) & PINB) == 0) {
+    PORTB |= (1<DDB3); /* ERROR: SCL LOW */
   }
-  DDRB |= (1<<DDB0); /* OUTPUT */
-  _delay_loop_1(7); /* Clock HIGH time */
+  if ( ((1<<PINB0) & PINB) != 0) {
+    PORTB |= (1<<DDB3); /* ERROR: NO ACK */
+  }
+  _delay_us(WAIT_FOR_SCL_DOWN); /* Clock HIGH time */
 }
 
 uint8_t i2c_clock_with_read_1bit(void) {
   uint8_t bit;
   PORTB &= ~(1<<DDB2); /* Clock LOW */
   DDRB &= ~(1<<DDB0); /* INPUT */
-  PORTB &= ~(1<<DDB0); /* NO PULLUP */
-  _delay_loop_1(7); /* wait 21(7*3) CPU cycle -- Data input hold time */
+  PORTB |= (1<<DDB0); /* ENABLE PULLUP */
+  _delay_us(HALF_CLOCK); /* wait 21(7*3) CPU cycle -- Data input hold time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(5); /* Clock HIGH time */
+  _delay_us(WAIT_FOR_RISETIME); /* wait pullup */
+  if ( ((1<<PINB2) & PINB) != (1<<PINB2)) {
+    PORTB |= (1<<DDB3); /* ERROR */
+  }
   bit = ((PINB & (1<<PINB0)) != 0) ? 1 : 0;
-  _delay_loop_1(2);
-  DDRB |= (1<<DDB0); /* OUTPUT */
+  _delay_us(WAIT_FOR_SCL_DOWN);
   return bit;
 }
 
@@ -133,11 +149,13 @@ int main(void)
    *  400kHz I2C Master
    */
 
+  cli();
+
   PORTB |= (1<<DDB2) | (1<<DDB0); /* Up SCL, SDA. Initial state. */
-  _delay_loop_1(14); /* wait 42(14*3) CPU cycle */
+  _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle */
 
   PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
-  _delay_loop_1(14); /* wait 42(14*3) CPU cycle -- 1312.5us */
+  _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle -- 1312.5us */
 
   i2c_clock_with_1();
   i2c_clock_with_0();
@@ -173,14 +191,16 @@ int main(void)
 
   i2c_clock_with_read_ack();
 
+  /* Generate start condition */
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(5); /* wait 35(7*5) CPU cycle -- Data input hold time */
+  DDRB |= (1<<DDB0); /* OUTPUT */
+  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 35(7*5) CPU cycle -- Data input hold time */
   PORTB |= (1<<DDB0); /* SDA: 1 */
-  _delay_loop_1(2); /* wait -- Data input setup time */
+  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(14); /* Clock HIGH time */
+  _delay_us(FULL_CLOCK); /* Clock HIGH time */
   PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
-  _delay_loop_1(14); /* wait 42(14*3) CPU cycle -- 2625us */
+  _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle -- 2625us */
 
   i2c_clock_with_1();
   i2c_clock_with_0();
@@ -193,8 +213,6 @@ int main(void)
   i2c_clock_with_1(); /* W/R bit READ */
 
   i2c_clock_with_read_ack();
-
-  sei();
 
   /* 63394 bytes (header 44 bytes) */
   for (uint16_t i = 44; i < 63393; ++i) {
@@ -213,19 +231,12 @@ int main(void)
 
     i2c_clock_with_0();
 
-    sei();
-    if (chunk != 0) {
-      PORTB |= (1<<DDB3);
-    }
-
-    while (fifo_isFull()); /* Busy wait */
-    /*
+    // while (fifo_isFull()); /* Busy wait */
     for (uint16_t j = 0; j < 60; j++) {
       __asm__ __volatile__ ("nop");
     }
-    */
 
-    PORTB &= ~(1<<DDB3);
+    sei();
   }
 
   chunk = 0b00000000;
@@ -241,13 +252,14 @@ int main(void)
   i2c_clock_with_1();
 
   PORTB &= ~(1<<DDB2); /* Clock LOW */
-  _delay_loop_1(5); /* wait 35(7*5) CPU cycle -- Data input hold time */
+  DDRB |= (1<<DDB0); /* OUTPUT */
+  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 35(7*5) CPU cycle -- Data input hold time */
   PORTB &= ~(1<<DDB0); /* SDA: 0 */
-  _delay_loop_1(2); /* wait -- Data input setup time */
+  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(7); /* Clock HIGH time */
+  _delay_us(FULL_CLOCK); /* Clock HIGH time */
   PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
-  _delay_loop_1(7); /* wait 21(7*3) CPU cycle -- 1312.5us */
+  _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
 
   PORTB |= (1<<DDB3);
 
