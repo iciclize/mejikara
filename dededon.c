@@ -10,6 +10,7 @@
 #include <avr/io.h>
 #include <avr/iotn85.h>
 #include <avr/interrupt.h>
+#include <avr/sleep.h>
 #include <util/delay.h>
 
 #define HALF_CLOCK          (1.25)
@@ -169,7 +170,20 @@ int main(void)
 
   cli();
 
-  PORTB |= (1<<DDB1) | (1<<DDB0); /* Up SCL, SDA. Initial state. */
+  /* stop condition start */
+  PORTB &= ~(1<<DDB1); /* Clock LOW */
+  DDRB |= (1<<DDB0); /* OUTPUT */
+  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 35(7*5) CPU cycle -- Data input hold time */
+  PORTB &= ~(1<<DDB0); /* SDA: 0 */
+  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
+  PORTB |= (1<<DDB1); /* CLOCK HIGH */
+  _delay_us(FULL_CLOCK); /* Clock HIGH time */
+  PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
+  _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
+  /* stop condition end */
+
+
+  PORTB |= (1<<DDB2) | (1<<DDB0); /* Up SCL, SDA. Initial state. */
   _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle */
 
   PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
@@ -278,7 +292,10 @@ int main(void)
   PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
   _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
 
-  PORTB |= (1<<DDB3);
+  PORTB &= ~((1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3));
+
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  sleep_mode();
 
   return 0;
 }
