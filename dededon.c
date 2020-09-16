@@ -13,14 +13,14 @@
 #include <avr/sleep.h>
 #include <util/delay.h>
 
-#define HALF_CLOCK          (1.25)
-#define FULL_CLOCK          (2.5)
+#define HALF_CLOCK          (2.5) // 1.25
+#define FULL_CLOCK          (5)  // 2.5
 
-#define WAIT_FOR_CHANGE_SDA (0.75)
-#define WAIT_FOR_SCL_UP     (0.5)
+#define WAIT_FOR_CHANGE_SDA (1.5) // 0.75
+#define WAIT_FOR_SCL_UP     (1)  // 0.5
 
-#define WAIT_FOR_RISETIME   (0.5)
-#define WAIT_FOR_SCL_DOWN   (0.75)
+#define WAIT_FOR_RISETIME   (1)  // 0.5
+#define WAIT_FOR_SCL_DOWN   (1.5) // 0.75
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
@@ -149,7 +149,8 @@ int main(void)
   PLLCSR = (1<<PCKE)|(1<<PLLE); /* Select PLL clock for TC1.ck */
   OCR1C = 0xFF; /* TOP value */
   OCR1B = 0x00;
-  GTCCR = (1<<PWM1B)|(1<<COM1B1)|(0<<COM1B0);
+  /* GTCCR = (1<<PWM1B)|(1<<COM1B1)|(0<<COM1B0); */
+  GTCCR = (1<<PWM1B)|(1<<COM1B1)|(1<<COM1B0);
   TCCR1 = 0x01; /* Start TC1. CS13-10: 0001(PCK(64MHz) in asynchronous mode) */
   TCNT1 = 0;
 
@@ -293,6 +294,7 @@ int main(void)
   _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
 
   PORTB &= ~((1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3));
+  OCR1B = 0x00;
 
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_mode();
