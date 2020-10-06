@@ -1,5 +1,5 @@
 /*
- *  yjsnpi.c
+ *  tadokoro.c
  *
  *  To run this project, set low FUSE bit 0b11100001,
  *  which means no CKDIV8, and use PLL for the system clock.
@@ -27,8 +27,8 @@
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
 
-#define SAMPLING_FREQUENCY (10000 - 100)
-#define WAV_FILE_SIZE      (61573)
+#define SAMPLING_FREQUENCY (22000 - 100)
+#define WAV_FILE_SIZE      (22062)
 
 unsigned long Fs = SAMPLING_FREQUENCY;
 uint8_t timer_div = 0;
@@ -172,6 +172,14 @@ int main(void)
 
   cli();
 
+  /* i2c reset */
+  for (uint8_t i = 10; i > 0; --i) {
+    PORTB &= ~(1<<DDB1); /* SCL: LOW */
+    _delay_us(HALF_CLOCK);
+    PORTB |= (1<<DDB1); /* SCL: HIGH */
+    _delay_us(HALF_CLOCK);
+  }
+
   /* stop condition start */
   PORTB &= ~(1<<DDB1); /* Clock LOW */
   DDRB |= (1<<DDB0); /* OUTPUT */
@@ -294,7 +302,9 @@ int main(void)
   PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
   _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
 
-  PORTB &= ~((1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3));
+  GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,3) */
+  TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
+  PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
   OCR1B = 0x00;
 
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
