@@ -149,8 +149,7 @@ int main(void)
   PLLCSR = (1<<PCKE)|(1<<PLLE); /* Select PLL clock for TC1.ck */
   OCR1C = 0xFF; /* TOP value */
   OCR1B = 0x00;
-  /* GTCCR = (1<<PWM1B)|(1<<COM1B1)|(0<<COM1B0); */
-  GTCCR = (1<<PWM1B)|(1<<COM1B1)|(1<<COM1B0);
+  GTCCR = (1<<PWM1B)|(0<<COM1B1)|(1<<COM1B0);
   TCCR1 = 0x01; /* Start TC1. CS13-10: 0001(PCK(64MHz) in asynchronous mode) */
   TCNT1 = 0;
 

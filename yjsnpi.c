@@ -12,16 +12,18 @@
 #include <avr/interrupt.h>
 #include <util/delay.h>
 
-#define FULL_CLOCK          (6)
-#define HALF_CLOCK          (3)
+#define HALF_CLOCK          (1.25)
+#define FULL_CLOCK          (2.5)
 
-#define WAIT_FOR_CHANGE_SDA (2)
-#define WAIT_FOR_SCL_UP     (1)
+#define WAIT_FOR_CHANGE_SDA (0.75)
+#define WAIT_FOR_SCL_UP     (0.5)
 
-#define WAIT_FOR_RISETIME   (1)
-#define WAIT_FOR_SCL_DOWN   (2)
+#define WAIT_FOR_RISETIME   (0.5)
+#define WAIT_FOR_SCL_DOWN   (0.75)
 
 #define MAX_FIFO_COUNT (10)
+
+uint16_t const Fs = 14000;
 
 int fifoWp;
 int fifoRp;
@@ -55,8 +57,6 @@ int fifo_isFull() {
   return (fifoRp == fifoWp) ? 1 : 0;
 }
 
-uint16_t const Fs = 14000;
-
 /*
  * called every sampling cycle
  */
@@ -72,7 +72,7 @@ void i2c_clock_with_0(void) {
   PORTB &= ~(1<<DDB0); /* SDA: 0 */
   _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
   PORTB |= (1<<DDB2); /* CLOCK HIGH */
-  _delay_loop_1(HALF_CLOCK); /* Clock HIGH time */
+  _delay_us(HALF_CLOCK); /* Clock HIGH time */
 }
 
 void i2c_clock_with_1(void) {
@@ -231,12 +231,9 @@ int main(void)
 
     i2c_clock_with_0();
 
-    // while (fifo_isFull()); /* Busy wait */
-    for (uint16_t j = 0; j < 60; j++) {
-      __asm__ __volatile__ ("nop");
-    }
-
     sei();
+
+    while (fifo_isFull()); /* Busy wait */
   }
 
   chunk = 0b00000000;
