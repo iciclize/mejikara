@@ -15,14 +15,14 @@
 #include <avr/sleep.h>
 #include <util/delay.h>
 
-#define HALF_CLOCK          (2.5) // 1.25
-#define FULL_CLOCK          (5)  // 2.5
+#define HALF_CLOCK          (1.25)
+#define FULL_CLOCK          (2.5)
 
-#define WAIT_FOR_CHANGE_SDA (1.5) // 0.75
-#define WAIT_FOR_SCL_UP     (1)  // 0.5
+#define WAIT_FOR_CHANGE_SDA (0.75)
+#define WAIT_FOR_SCL_UP     (0.5)
 
-#define WAIT_FOR_RISETIME   (1)  // 0.5
-#define WAIT_FOR_SCL_DOWN   (1.5) // 0.75
+#define WAIT_FOR_RISETIME   (0.5)
+#define WAIT_FOR_SCL_DOWN   (0.75)
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
@@ -172,29 +172,34 @@ int main(void)
 
   cli();
 
+  PORTB |= (1<<DDB0) | (1<<DDB1);
+  _delay_us(FULL_CLOCK);
+  PORTB &= ~(1<<DDB0); /* start condition */
+  _delay_us(HALF_CLOCK);
+  PORTB &= ~(1<<DDB1); /* SCL DOWN */
+  _delay_us(HALF_CLOCK);
+  PORTB |= (1<<DDB0); /* SDA 1 */
+
   /* i2c reset */
-  for (uint8_t i = 10; i > 0; --i) {
+  for (uint8_t i = 9; i > 0; --i) {
     PORTB &= ~(1<<DDB1); /* SCL: LOW */
     _delay_us(HALF_CLOCK);
     PORTB |= (1<<DDB1); /* SCL: HIGH */
     _delay_us(HALF_CLOCK);
   }
 
+  PORTB &= ~(1<<DDB0); /* SDA 0 - start condition */
+  _delay_us(HALF_CLOCK);
+
   /* stop condition start */
   PORTB &= ~(1<<DDB1); /* Clock LOW */
-  DDRB |= (1<<DDB0); /* OUTPUT */
-  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 35(7*5) CPU cycle -- Data input hold time */
-  PORTB &= ~(1<<DDB0); /* SDA: 0 */
-  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
+  _delay_us(HALF_CLOCK);
   PORTB |= (1<<DDB1); /* CLOCK HIGH */
   _delay_us(FULL_CLOCK); /* Clock HIGH time */
   PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
   _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
   /* stop condition end */
 
-
-  PORTB |= (1<<DDB2) | (1<<DDB0); /* Up SCL, SDA. Initial state. */
-  _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle */
 
   PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
   _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle -- 1312.5us */
