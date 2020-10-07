@@ -2,27 +2,27 @@
  *  tadokoro.c
  *
  *  To run this project, set low FUSE bit 0b11100001,
- *  which means no CKDIV8, and use PLL for the system clock.
+ *  which means CKDIV8 is disabled and PLL is enabled for the system clock.
  *  The system clock will be 16MHz. 
  */
 #define F_CPU (16000000UL)
 
 #include <avr/io.h>
 #ifndef YJSNPI_MAKE
-  #include <avr/iotn85.h>
+  #include <avr/iotn85.h> /* for autocompletion */
 #endif
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 #include <util/delay.h>
 
-#define HALF_CLOCK          (1.25)
-#define FULL_CLOCK          (2.5)
+#define SCL_LOW()   do { PORTB &= ~(1<<PB1); } while (0)
+#define SCL_HIGH()  do { PORTB |= 1<<PB1; } while (0)
+#define SDA_LOW()   do { PORTB &= ~(1<<PB0); } while (0)
+#define SDA_HIGH()  do { PORTB |= 1<<PB0; } while (0)
 
-#define WAIT_FOR_CHANGE_SDA (0.75)
-#define WAIT_FOR_SCL_UP     (0.5)
 
-#define WAIT_FOR_RISETIME   (0.5)
-#define WAIT_FOR_SCL_DOWN   (0.75)
+#define I2C_HALF_CLOCK      (1.25)
+#define I2C_FULL_CLOCK      (2.5)
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
@@ -69,7 +69,7 @@ int fifo_isFull() {
 }
 
 /*
- * called every sampling cycle
+ * be called every sample cycle
  */
 ISR(TIM0_COMPA_vect)
 {
@@ -81,56 +81,111 @@ ISR(TIM0_COMPA_vect)
   }
 }
 
-void i2c_clock_with_0(void) {
-  PORTB &= ~(1<<DDB1); /* Clock LOW */
-  DDRB |= (1<<DDB0); /* OUTPUT */
-  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 15(5*3) CPU cycle -- Data input hold time */
-  PORTB &= ~(1<<DDB0); /* SDA: 0 */
-  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
-  PORTB |= (1<<DDB1); /* CLOCK HIGH */
-  _delay_us(HALF_CLOCK); /* Clock HIGH time */
+void i2c_start(void) {
+  SDA_HIGH();
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH();
+  _delay_us(I2C_HALF_CLOCK);
+  SDA_LOW();
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW();
 }
 
-void i2c_clock_with_1(void) {
-  PORTB &= ~(1<<DDB1); /* Clock LOW */
-  DDRB |= (1<<DDB0); /* OUTPUT */
-  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 15(5*3) CPU cycle -- Data input hold time */
-  PORTB |= (1<<DDB0); /* SDA: 1 */
-  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
-  PORTB |= (1<<DDB1); /* CLOCK HIGH */
-  _delay_us(HALF_CLOCK); /* Clock HIGH time */
+void i2c_stop(void) {
+  SDA_LOW();
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH();
+  _delay_us(I2C_HALF_CLOCK);
+  SDA_HIGH();
 }
 
-void i2c_clock_with_read_ack(void) {
-  PORTB &= ~(1<<DDB1); /* Clock LOW */
-  DDRB &= ~(1<<DDB0); /* INPUT */
-  PORTB |= (1<<DDB0); /* ENABLE PULLUP */
-  _delay_us(HALF_CLOCK); /* wait 21(7*3) CPU cycle */
-  PORTB |= (1<<DDB1); /* CLOCK HIGH */
-  _delay_us(WAIT_FOR_RISETIME);
-  if ( ((1<<PINB1) & PINB) == 0) {
-    PORTB |= (1<DDB3); /* ERROR: SCL LOW */
+void i2c_reset(void) {
+  SDA_HIGH();
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+
+  /* generate start condition */
+  SDA_LOW(); _delay_us(I2C_HALF_CLOCK);
+
+  /* generate stop condition */
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SDA_HIGH(); _delay_us(I2C_HALF_CLOCK);
+
+  /* down bus */
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SDA_LOW(); _delay_us(I2C_HALF_CLOCK);
+}
+
+uint8_t i2c_transmit(uint8_t data) {
+  uint8_t nack = 0;
+  for (uint8_t mask = 1; mask < (1<<7); mask <<= 1) {
+    if ((data & mask) != 0) {
+      SDA_HIGH();
+    } else {
+      SDA_LOW();
+    }
+    _delay_us(I2C_HALF_CLOCK);
+    SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+    SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
   }
+  /* Receive ACK */
+  SDA_HIGH();
+  DDRB &= ~(1<<DDB0); /* SDA as input. Pull-up is also enabled. */
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH();
   if ( ((1<<PINB0) & PINB) != 0) {
-    PORTB |= (1<<DDB3); /* ERROR: NO ACK */
+    /* NACK */
+    nack = 1;
   }
-  _delay_us(WAIT_FOR_SCL_DOWN); /* Clock HIGH time */
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW();
+  DDRB |= (1<<DDB0); /* SDA as output. */
+  return nack;
 }
 
-uint8_t i2c_clock_with_read_1bit(void) {
-  uint8_t bit;
-  PORTB &= ~(1<<DDB1); /* Clock LOW */
-  DDRB &= ~(1<<DDB0); /* INPUT */
-  PORTB |= (1<<DDB0); /* ENABLE PULLUP */
-  _delay_us(HALF_CLOCK); /* wait 21(7*3) CPU cycle -- Data input hold time */
-  PORTB |= (1<<DDB1); /* CLOCK HIGH */
-  _delay_us(WAIT_FOR_RISETIME); /* wait pullup */
-  if ( ((1<<PINB1) & PINB) != (1<<PINB1)) {
-    PORTB |= (1<<DDB3); /* ERROR */
+uint8_t i2c_receive(uint8_t nack) {
+  uint8_t buf = 0b00000000;
+  SDA_HIGH();
+  DDRB &= ~(1<<DDB0); /* SDA as input. Pull-up is also enabled. */
+
+  for (uint8_t i = 0; i < 8; i++) {
+    buf <<= 1;
+    SCL_HIGH();
+    _delay_us(I2C_HALF_CLOCK);
+    if ( ((1<<PINB0) & PINB) != 0) {
+      buf += 1;
+    }
+    SCL_LOW();
+    _delay_us(I2C_HALF_CLOCK);
   }
-  bit = ((PINB & (1<<PINB0)) != 0) ? 1 : 0;
-  _delay_us(WAIT_FOR_SCL_DOWN);
-  return bit;
+
+  /* Send ACK */
+  DDRB |= (1<<DDB0); /* SDA as output. */
+  if (nack) {
+    SDA_HIGH();
+  } else {
+    SDA_LOW();
+  }
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  return buf;
 }
 
 int main(void)
@@ -172,140 +227,38 @@ int main(void)
 
   cli();
 
-  PORTB |= (1<<DDB0) | (1<<DDB1);
-  _delay_us(FULL_CLOCK);
-  PORTB &= ~(1<<DDB0); /* start condition */
-  _delay_us(HALF_CLOCK);
-  PORTB &= ~(1<<DDB1); /* SCL DOWN */
-  _delay_us(HALF_CLOCK);
-  PORTB |= (1<<DDB0); /* SDA 1 */
+  i2c_reset();
 
-  /* i2c reset */
-  for (uint8_t i = 9; i > 0; --i) {
-    PORTB &= ~(1<<DDB1); /* SCL: LOW */
-    _delay_us(HALF_CLOCK);
-    PORTB |= (1<<DDB1); /* SCL: HIGH */
-    _delay_us(HALF_CLOCK);
-  }
+  i2c_start();
 
-  PORTB &= ~(1<<DDB0); /* SDA 0 - start condition */
-  _delay_us(HALF_CLOCK);
-
-  /* stop condition start */
-  PORTB &= ~(1<<DDB1); /* Clock LOW */
-  _delay_us(HALF_CLOCK);
-  PORTB |= (1<<DDB1); /* CLOCK HIGH */
-  _delay_us(FULL_CLOCK); /* Clock HIGH time */
-  PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
-  _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
-  /* stop condition end */
-
-
-  PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
-  _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle -- 1312.5us */
-
-  i2c_clock_with_1();
-  i2c_clock_with_0();
-  i2c_clock_with_1();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-
-  i2c_clock_with_0(); /* W/R bit WRITE */
-
-  i2c_clock_with_read_ack();
-
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-
-  i2c_clock_with_read_ack();
+  i2c_transmit(0b10100000); /* control byte (write) */
+  i2c_transmit(0b00000000); /* high order address byte */
+  i2c_transmit(0b00101100); /* low order address byte */
   
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_1();
-  i2c_clock_with_0();
-  i2c_clock_with_1();
-  i2c_clock_with_1();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
+  i2c_start();
 
-  i2c_clock_with_read_ack();
-
-  /* Generate start condition */
-  PORTB &= ~(1<<DDB1); /* Clock LOW */
-  DDRB |= (1<<DDB0); /* OUTPUT */
-  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 35(7*5) CPU cycle -- Data input hold time */
-  PORTB |= (1<<DDB0); /* SDA: 1 */
-  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
-  PORTB |= (1<<DDB1); /* CLOCK HIGH */
-  _delay_us(FULL_CLOCK); /* Clock HIGH time */
-  PORTB &= ~(1<<DDB0); /* To generate start state, down SDA. */
-  _delay_us(FULL_CLOCK); /* wait 42(14*3) CPU cycle -- 2625us */
-
-  i2c_clock_with_1();
-  i2c_clock_with_0();
-  i2c_clock_with_1();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-  i2c_clock_with_0();
-
-  i2c_clock_with_1(); /* W/R bit READ */
-
-  i2c_clock_with_read_ack();
+  i2c_transmit(0b10100001); /* control byte (read) */
 
   /* 63394 bytes (header 44 bytes) */
   for (uint16_t i = 44; i < WAV_FILE_SIZE - 1; ++i) {
     cli();
-    chunk = 0b00000000;
-    chunk |= i2c_clock_with_read_1bit() << 7;
-    chunk |= i2c_clock_with_read_1bit() << 6;
-    chunk |= i2c_clock_with_read_1bit() << 5;
-    chunk |= i2c_clock_with_read_1bit() << 4;
-    chunk |= i2c_clock_with_read_1bit() << 3;
-    chunk |= i2c_clock_with_read_1bit() << 2;
-    chunk |= i2c_clock_with_read_1bit() << 1;
-    chunk |= i2c_clock_with_read_1bit() << 0;
+
+    chunk = i2c_receive(0);
 
     fifo_write(chunk);
-
-    i2c_clock_with_0();
 
     sei();
 
     /* fifo_isFull() */
     while (fifoRp == fifoWp);
-
   }
 
-  chunk = 0b00000000;
-  chunk |= i2c_clock_with_read_1bit() << 7;
-  chunk |= i2c_clock_with_read_1bit() << 6;
-  chunk |= i2c_clock_with_read_1bit() << 5;
-  chunk |= i2c_clock_with_read_1bit() << 4;
-  chunk |= i2c_clock_with_read_1bit() << 3;
-  chunk |= i2c_clock_with_read_1bit() << 2;
-  chunk |= i2c_clock_with_read_1bit() << 1;
-  chunk |= i2c_clock_with_read_1bit() << 0;
+  chunk = i2c_receive(1);
+  cli();
+  fifo_write(chunk);
+  sei();
   
-  i2c_clock_with_1();
-
-  PORTB &= ~(1<<DDB1); /* Clock LOW */
-  DDRB |= (1<<DDB0); /* OUTPUT */
-  _delay_us(WAIT_FOR_CHANGE_SDA); /* wait 35(7*5) CPU cycle -- Data input hold time */
-  PORTB &= ~(1<<DDB0); /* SDA: 0 */
-  _delay_us(WAIT_FOR_SCL_UP); /* wait -- Data input setup time */
-  PORTB |= (1<<DDB1); /* CLOCK HIGH */
-  _delay_us(FULL_CLOCK); /* Clock HIGH time */
-  PORTB |= (1<<DDB0); /* To generate stop state, up SDA. */
-  _delay_us(FULL_CLOCK); /* wait 21(7*3) CPU cycle -- 1312.5us */
+  i2c_stop();
 
   GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,3) */
   TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
