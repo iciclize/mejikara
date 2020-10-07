@@ -16,9 +16,9 @@
 #include <util/delay.h>
 
 #define SCL_LOW()   do { PORTB &= ~(1<<PB1); } while (0)
-#define SCL_HIGH()  do { PORTB |= 1<<PB1; } while (0)
+#define SCL_HIGH()  do { PORTB |= (1<<PB1); } while (0)
 #define SDA_LOW()   do { PORTB &= ~(1<<PB0); } while (0)
-#define SDA_HIGH()  do { PORTB |= 1<<PB0; } while (0)
+#define SDA_HIGH()  do { PORTB |= (1<<PB0); } while (0)
 
 
 #define I2C_HALF_CLOCK      (1.25)
@@ -134,7 +134,7 @@ void i2c_reset(void) {
 
 uint8_t i2c_transmit(uint8_t data) {
   uint8_t nack = 0;
-  for (uint8_t mask = 1; mask < (1<<7); mask <<= 1) {
+  for (uint16_t mask = 1<<7; mask > 0; mask >>= 1) {
     if ((data & mask) != 0) {
       SDA_HIGH();
     } else {
