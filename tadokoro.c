@@ -126,7 +126,7 @@ void i2c_reset(void) {
 
 uint8_t i2c_transmit(uint8_t data) {
   uint8_t nack = 0;
-  for (uint16_t mask = 1<<7; mask > 0; mask >>= 1) {
+  for (uint8_t mask = 1<<7; mask > 0; mask >>= 1) {
     if ((data & mask) != 0) {
       SDA_HIGH();
     } else {
