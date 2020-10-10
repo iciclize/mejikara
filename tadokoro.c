@@ -195,7 +195,7 @@ int main(void)
   PORTB = 0x00;
 
   /*
-   *  about 200kHz I2C Master
+   *  about 400kHz I2C Master
    */
 
   /*
