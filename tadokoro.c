@@ -28,7 +28,7 @@ FUSES = { .extended = 0xFF, .high = 0xDF, .low = 0xE1 };
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
 
-#define SAMPLING_FREQUENCY (22000 - 100)
+#define SAMPLING_FREQUENCY (4545)
 #define WAV_FILE_SIZE      (22062)
 
 uint16_t Fs = SAMPLING_FREQUENCY;
@@ -216,7 +216,6 @@ int main(void)
 
 #define CONCAT_4(c1,c2,c3,c4) (((uint32_t)c1<<24)+((uint32_t)c2<<16)+((uint16_t)c3<<8)+(uint8_t)c4)
 
-    cli();
     i2c_reset();
 
     i2c_start();
@@ -285,8 +284,8 @@ int main(void)
     }
     OCR0A  = (uint8_t)(ocrmax - 1);
     /* Start TC0 as interval timer at 2MHz */
-    TCCR0A = (0<<WGM02)|(1<<WGM01)|(0<<WGM00);
-    TCCR0B = (0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
+    TCCR0A = (1<<WGM01)|(0<<WGM00);
+    TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
 
     TIMSK = (1<<OCIE0A); /* Timer/Counter0 Output Compare Match A Interrupt Enable */
 
@@ -310,12 +309,12 @@ int main(void)
   do {
     chunk = i2c_receive(0);
 
-    /* fifo_isFull() */
-    while (fifoRp == fifoWp);
-
     cli();
     fifo_write(chunk);
     sei();
+
+    /* fifo_isFull() */
+    while (fifoRp == fifoWp);
 
     num_samples--;
   } while (num_samples > 0);
