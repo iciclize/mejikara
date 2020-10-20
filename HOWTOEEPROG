@@ -1,0 +1,5 @@
+Read:
+$ eeprog -xf /dev/i2c-1 0x50 -16 -r 0x00:0x100
+
+Write:
+$ eeprog -f -16 -w 0 -t 5 /dev/i2c-1 0x50 -i filename
