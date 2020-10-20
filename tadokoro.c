@@ -196,7 +196,7 @@ struct IMA_WORK {
 uint16_t ima_decode(uint8_t nibble, struct IMA_WORK* work)
 {
   uint16_t step;
-  uint16_t diff;
+  int32_t diff;
   int32_t tmp;
   nibble &= 0b00001111;
   step = (uint16_t)pgm_read_word(&ima_step_table[work->step_index]);
@@ -396,7 +396,10 @@ int main(void)
 
         for (ni = 0; ni < 2; ni++) {
           cli();
-          fifo_write( ((ima_decode(nibble[ni], &ima_work)^0x8000)+0x80) >> 8 );
+          /* signed int 16 -> unsigned int 8 conversion step */
+          int16_t  d = ima_decode(nibble[ni], &ima_work);
+          uint16_t s = (d^0x8000) + 0x80;
+          fifo_write((uint8_t)(s>>8));
           sei();
 
           while (FIFO_ISFULL());
