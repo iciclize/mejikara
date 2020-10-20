@@ -29,11 +29,19 @@ FUSES = { .extended = 0xFF, .high = 0xDF, .low = 0xE1 };
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
 
+/*
+ *  multiple sounds
+ */
+#include "TADOKORO_SOUND_TABLE.h"
+uint8_t sound_index = 0;
+extern const uint16_t sound_table[NUM_SOUND_TABLE] __attribute__((__progmem__));
+volatile uint8_t play_irq = 0;
+
 uint8_t timer_div = 0;
 volatile uint8_t div_count = 0;
 
-volatile int fifoWp;
-volatile int fifoRp;
+volatile int8_t fifoWp;
+volatile int8_t fifoRp;
 
 uint8_t fifoBuf[MAX_FIFO_COUNT];
 
@@ -208,24 +216,27 @@ uint16_t ima_decode(uint8_t nibble, struct IMA_WORK* work)
   if (nibble & 0b1000) diff = -diff;
 
   tmp = work->predictor + diff;
+  work->predictor = (int16_t)tmp;
   if (tmp < -32768) work->predictor = -32768;
-  else if (tmp > 32767) work->predictor = 32767;
-  else work->predictor = (int16_t)tmp;
+  if (tmp > 32767) work->predictor = 32767;
 
   tmp = work->step_index + (int8_t)pgm_read_byte(&ima_index_table[nibble]);
+  work->step_index = tmp;
   if (tmp < 0) work->step_index = 0;
-  else if (tmp > 88) work->step_index = 88;
-  else work->step_index = tmp;
+  if (tmp > 88) work->step_index = 88;
 
   return work->predictor;
 }
 
-int main(void)
+void play(void)
 {
   uint16_t num_samples = 0;
   uint16_t block_size = 0;
   uint8_t adpcm = 0;
   uint8_t chunk;
+
+replay:
+  play_irq = 0;
 
   /* set DDRB -- Data Direction Registor for port B
    * Set PB4, PB3, PB1, PB0 as OUTPUT
@@ -234,8 +245,10 @@ int main(void)
    * PB1: SCL,
    * PB0: SDA
    */
-  DDRB = (1<<DDB4)|(1<<DDB1)|(1<<DDB0)|(1<<DDB3);
-  PORTB = 0x00;
+  DDRB = (1<<DDB4)|(1<<DDB3)|(1<<DDB1)|(1<<DDB0);
+  PORTB &= ~((1<<PB4)|(1<<PB3)|(1<<PB1)|(1<<PB0));
+
+  GIMSK |= (1<<INT0);
 
   FIFO_INIT();
 
@@ -247,10 +260,13 @@ int main(void)
    *  Read a WAV header. Start timers. Set a read addres.
    */
   {
-    uint16_t Fs = 4545; /* sample rate */
+    uint16_t Fs; /* sample rate */
     uint16_t p; /* an index where to read */
 
-#define WAVE_SKIP_OFFSET ((uint16_t)12)
+#define WAVE_SKIP_OFFSET (12)
+    uint16_t ROM_READ_OFFSET =
+      (uint16_t)pgm_read_word(&sound_table[sound_index]) + WAVE_SKIP_OFFSET;
+
 
     /* 4 bytes in little endian -> uint32 */
 #define SWAP_4(c1,c2,c3,c4) ( ((uint32_t)c4<<24) + ((uint32_t)c3<<16) \
@@ -264,8 +280,8 @@ int main(void)
 
     i2c_start();
     i2c_transmit(0b10100000); /* control byte (write) */
-    i2c_transmit((uint8_t)(WAVE_SKIP_OFFSET >> 8)); /* high order address byte */
-    i2c_transmit((uint8_t)WAVE_SKIP_OFFSET); /* low order address byte */
+    i2c_transmit((uint8_t)(ROM_READ_OFFSET >> 8)); /* high order address byte */
+    i2c_transmit((uint8_t)ROM_READ_OFFSET); /* low order address byte */
     i2c_start();
     i2c_transmit(0b10100001); /* control byte (read) */
 
@@ -303,10 +319,10 @@ int main(void)
                 block_size = *(uint16_t *)&buf[p + 12];
                 break;
               default:
-                return 1;
+                return;
             }
             tmp = *(uint16_t *)&buf[p+2]; /* the number of channels */
-            if (tmp != 1) return 1; /* only 1 (mono) is accepted */
+            if (tmp != 1) return; /* only 1 (mono) is accepted */
             Fs = *(uint32_t *)&buf[p+4]; /* sample rate */
             p += size; /* to the head of the next chunk */
             break;
@@ -319,7 +335,7 @@ int main(void)
             /* stay at the data part of the chunk */
             break;
           default:
-            return 1;
+            return;
         }
       } while (id != SWAP_4('d', 'a', 't', 'a'));
 
@@ -330,7 +346,6 @@ int main(void)
      */
     PLLCSR = (1<<PCKE)|(1<<PLLE); /* Select PLL clock for TC1.ck */
     OCR1C = 0xFF; /* TOP value. PWM resolution. Max PWM width. */
-    OCR1B = 0x00; /* PWM Pulse width */
     /* enable PWM1B. Both PB4 and PB3 are output. PB3 is a reversed output. */
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(1<<COM1B0);
     TCCR1 = 0x01; /* Start TC1. CS[13:10] -- 0001(PCK(64MHz) in asynchronous mode) */
@@ -357,8 +372,8 @@ int main(void)
      */
     i2c_start();
     i2c_transmit(0b10100000); /* control byte (write) */
-    i2c_transmit((uint8_t)((p + WAVE_SKIP_OFFSET)>>8)); /* high order address byte */
-    i2c_transmit((uint8_t)(p + WAVE_SKIP_OFFSET)); /* low order address byte */
+    i2c_transmit((uint8_t)((p + ROM_READ_OFFSET)>>8)); /* high order address byte */
+    i2c_transmit((uint8_t)(p + ROM_READ_OFFSET)); /* low order address byte */
     i2c_start();
     i2c_transmit(0b10100001); /* control byte (read) */
 
@@ -383,7 +398,7 @@ int main(void)
       i2c_receive(0); /* IMA reserved byte */
 
       cli();
-      fifo_write( ((ima_work.predictor^0x8000)+0x80) >> 8 );
+      fifo_write((ima_work.predictor >> 8) + 0x80);
       sei();
 
       do {
@@ -394,12 +409,13 @@ int main(void)
         nibble[0] = chunk;
         nibble[1] = chunk >> 4;
 
+        if (play_irq)
+          goto replay;
+
         for (ni = 0; ni < 2; ni++) {
           cli();
           /* signed int 16 -> unsigned int 8 conversion step */
-          int16_t  d = ima_decode(nibble[ni], &ima_work);
-          uint16_t s = (d^0x8000) + 0x80;
-          fifo_write((uint8_t)(s>>8));
+          fifo_write((ima_decode(nibble[ni], &ima_work) >> 8) + 0x80);
           sei();
 
           while (FIFO_ISFULL());
@@ -418,6 +434,9 @@ int main(void)
       fifo_write(chunk);
       sei();
 
+      if (play_irq)
+        goto replay;
+
       while (FIFO_ISFULL());
 
       num_samples--;
@@ -432,10 +451,23 @@ int main(void)
   GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
   TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
   PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
-  OCR1B = 0x00;
+}
 
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-  sleep_mode();
+ISR(INT0_vect)
+{
+  play_irq = 1;
+}
 
-  return 0;
+int main(void) {
+  PORTB |= (1<<PB2); /* INT0 pullup */
+  MCUCR = (0<<ISC01)|(0<<ISC00);
+  GIMSK = (1<<INT0);
+
+  do {
+    sound_index = sound_index % NUM_SOUND_TABLE;
+    play();
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+    sleep_mode();
+    sound_index++;
+  } while (1);
 }
