@@ -48,6 +48,7 @@ uint8_t fifoBuf[MAX_FIFO_COUNT];
 #define FIFO_INIT()  do { fifoWp = 1; fifoRp = 0; } while (0)
 
 void fifo_write(uint8_t v) {
+  cli();
   if (fifoWp == fifoRp) {
     // full
     return;
@@ -55,14 +56,13 @@ void fifo_write(uint8_t v) {
   fifoBuf[fifoWp] = v;
   /* optimization for (fifoWp + 1) % MAX_FIFO_COUNT */
   fifoWp = (fifoWp + 1) & (MAX_FIFO_COUNT - 1);
+  sei();
 }
 
 uint8_t fifo_read() {
   int next;
   next = (fifoRp + 1) & (MAX_FIFO_COUNT - 1);
-  if (next == fifoWp) { /* empty */
-    return fifoBuf[fifoRp];
-  }
+  if (next == fifoWp) return fifoBuf[fifoRp]; /* empty */
   fifoRp = next;
   return fifoBuf[fifoRp];
 }
@@ -206,6 +206,7 @@ uint16_t ima_decode(uint8_t nibble, struct IMA_WORK* work)
   uint16_t step;
   int32_t diff;
   int32_t tmp;
+
   nibble &= 0b00001111;
   step = (uint16_t)pgm_read_word(&ima_step_table[work->step_index]);
 
@@ -238,6 +239,9 @@ void play(void)
 replay:
   play_irq = 0;
 
+  if (play_irq)
+    goto replay;
+
   /* set DDRB -- Data Direction Registor for port B
    * Set PB4, PB3, PB1, PB0 as OUTPUT
    * PB4: Sound output,
@@ -247,8 +251,6 @@ replay:
    */
   DDRB = (1<<DDB4)|(1<<DDB3)|(1<<DDB1)|(1<<DDB0);
   PORTB &= ~((1<<PB4)|(1<<PB3)|(1<<PB1)|(1<<PB0));
-
-  GIMSK |= (1<<INT0);
 
   FIFO_INIT();
 
@@ -260,7 +262,7 @@ replay:
    *  Read a WAV header. Start timers. Set a read addres.
    */
   {
-    uint16_t Fs; /* sample rate */
+    uint16_t Fs = 4545; /* sample rate */
     uint16_t p; /* an index where to read */
 
 #define WAVE_SKIP_OFFSET (12)
@@ -300,10 +302,10 @@ replay:
       i2c_receive(1);
       i2c_stop();
 
-     /* at the SKIP_OFFSETth byte (i.e. at the 12th, the head of 'fmt_').
+     /* at the WAVE_SKIP_OFFSETth byte (i.e. at the 12th, the head of 'fmt_').
       * omit RIFFxxxxWAVE */
       p = 0;
-      do {
+      while (1) {
         id = *(uint32_t *)&buf[p]; /* chunk id  */
         size = *(uint32_t *)&buf[p+4]; /* size of data */
         p += 8; /* to the chunk data */
@@ -332,18 +334,23 @@ replay:
             break;
           case SWAP_4('d', 'a', 't', 'a'):
             if (num_samples == 0) num_samples = size;
-            /* stay at the data part of the chunk */
+            goto done_header;
             break;
           default:
             return;
         }
-      } while (id != SWAP_4('d', 'a', 't', 'a'));
+
+        if (p < 52) continue;
+
+        return;
+      }
 
     } /* end a scope for a buffer */
 
     /*
      *  Settings for Timer 1 (250kHz PWM carrier)
      */
+done_header:
     PLLCSR = (1<<PCKE)|(1<<PLLE); /* Select PLL clock for TC1.ck */
     OCR1C = 0xFF; /* TOP value. PWM resolution. Max PWM width. */
     /* enable PWM1B. Both PB4 and PB3 are output. PB3 is a reversed output. */
@@ -397,9 +404,7 @@ replay:
       ima_work.step_index = i2c_receive(0); /* IMA Step Table Index */
       i2c_receive(0); /* IMA reserved byte */
 
-      cli();
       fifo_write((ima_work.predictor >> 8) + 0x80);
-      sei();
 
       do {
         uint8_t nibble[2]; /* 0: low nibble[3:0], 1: high nibble[7:4] */
@@ -413,10 +418,8 @@ replay:
           goto replay;
 
         for (ni = 0; ni < 2; ni++) {
-          cli();
           /* signed int 16 -> unsigned int 8 conversion step */
           fifo_write((ima_decode(nibble[ni], &ima_work) >> 8) + 0x80);
-          sei();
 
           while (FIFO_ISFULL());
         }
@@ -430,9 +433,7 @@ replay:
     while (num_samples > 0) {
       chunk = i2c_receive(0);
 
-      cli();
       fifo_write(chunk);
-      sei();
 
       if (play_irq)
         goto replay;
@@ -447,10 +448,6 @@ replay:
   i2c_stop();
 
   while ( !FIFO_ISEMPTY() );
-
-  GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
-  TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
-  PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
 }
 
 ISR(INT0_vect)
@@ -463,11 +460,14 @@ int main(void) {
   MCUCR = (0<<ISC01)|(0<<ISC00);
   GIMSK = (1<<INT0);
 
-  do {
+  while (1) {
     sound_index = sound_index % NUM_SOUND_TABLE;
     play();
+    GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
+    TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
+    PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
     sleep_mode();
     sound_index++;
-  } while (1);
+  }
 }
