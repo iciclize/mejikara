@@ -263,6 +263,7 @@ replay:
     uint16_t p; /* an index where to read */
 
 #define WAVE_SKIP_OFFSET (12)
+
     uint16_t ROM_READ_OFFSET =
       (uint16_t)pgm_read_word(&sound_table[sound_index]) + WAVE_SKIP_OFFSET;
 
@@ -390,8 +391,10 @@ done_header:
     do {
       struct IMA_WORK ima_work;
       uint16_t samples_block; /* the rest of the samples in the current block */
+      const uint16_t wSamplesPerBlock
+        = (block_size - 4) * 2 + 1;
 
-      samples_block = (block_size - 4) * 2 + 1; /* wSamplesPerBlock */
+      samples_block = wSamplesPerBlock;
 
       chunk = i2c_receive(0); /* IMA Samp0 LoByte */
       ima_work.predictor = (i2c_receive(0) << 8 | chunk); /* Hi:Lo */
@@ -421,7 +424,7 @@ done_header:
         samples_block -= 2;
       } while (samples_block >= 2);
 
-      num_samples -= (block_size - 4) * 2 + 1;
+      num_samples -= wSamplesPerBlock;
     } while (num_samples >= 4);
   } else {
     while (num_samples > 0) {
