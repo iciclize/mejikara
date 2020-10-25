@@ -39,9 +39,6 @@ uint8_t sound_index = 0;
 extern const uint16_t sound_table[NUM_SOUND_TABLE] __attribute__((__progmem__));
 volatile uint8_t play_irq = 0;
 
-uint8_t timer_div = 0;
-volatile uint8_t div_count = 0;
-
 volatile int8_t fifoWp;
 volatile int8_t fifoRp;
 
@@ -78,12 +75,7 @@ uint8_t fifo_read() {
  */
 ISR(TIM0_COMPA_vect)
 {
-  if (div_count < timer_div) {
-    div_count++;
-  } else {
-    OCR1B = fifo_read() >> 2;
-    div_count = 0;
-  }
+  OCR1B = fifo_read() >> 2;
 }
 
 void i2c_start(void) {
@@ -326,7 +318,7 @@ replay:
             }
             tmp = *(uint16_t *)&buf[p+2]; /* the number of channels */
             if (tmp != 1) return; /* only 1 (mono) is accepted */
-            /* Max Fs is 16500 Hz */
+            /* Fs must be within 7850-16500Hz */
             Fs = *(uint32_t *)&buf[p+4]; /* sample rate */
             p += size; /* to the head of the next chunk */
             break;
@@ -358,12 +350,8 @@ replay:
     /*
      *  Settings for Timer 0 (sound data)
      */
-    uint16_t ocrmax = (F_CPU / 8) / (Fs - 100);
-    while (ocrmax > 256) {
-      ocrmax = ocrmax / 2;
-      timer_div++;
-    }
-    OCR0A  = (uint8_t)(ocrmax - 1);
+    uint16_t ocrmax = (F_CPU / 8) / (Fs - 100/* speed adjustment here */);
+    OCR0A  = (uint8_t)(ocrmax);
     TCCR0A = (1<<WGM01)|(0<<WGM00);
     TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
     /* Start TC0 as interval timer at 1MHz */
