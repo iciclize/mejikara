@@ -157,7 +157,7 @@ uint8_t i2c_receive(uint8_t nack) {
     SCL_HIGH();
     _delay_us(I2C_HIGH_TIME);
     if ( ((1<<PINB0) & PINB) != 0) {
-      buf += 1;
+      buf |= 1;
     }
     SCL_LOW();
     _delay_us(I2C_HALF_CLOCK);
