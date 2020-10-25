@@ -1,11 +1,9 @@
 /*
+ *
  *  tadokoro.c
  *
- *  To run this project, set low FUSE bit 0b11100001,
- *  which means CKDIV8 is disabled and PLL is enabled for the system clock.
- *  The system clock will be 16MHz. 
  */
-#define F_CPU (16000000UL)
+#define F_CPU (8000000UL)
 
 #include <avr/io.h>
 #ifndef YJSNPI_MAKE
@@ -16,14 +14,18 @@
 #include <util/delay.h>
 #include <avr/pgmspace.h>
 
-FUSES = { .extended = 0xFF, .high = 0xDF, .low = 0xE1 };
+FUSES = {
+  .extended = 0xFF,
+  .high = 0xDF,
+  .low = 0xE2
+};
 
 #define SCL_LOW()   do { PORTB &= ~(1<<PB1); } while (0)
 #define SCL_HIGH()  do { PORTB |= (1<<PB1); } while (0)
 #define SDA_LOW()   do { PORTB &= ~(1<<PB0); } while (0)
 #define SDA_HIGH()  do { PORTB |= (1<<PB0); } while (0)
 
-#define I2C_HALF_CLOCK      (1.25)
+#define I2C_HALF_CLOCK      (1.3)
 #define I2C_FULL_CLOCK      (2.5)
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
@@ -61,7 +63,8 @@ uint8_t fifo_read() {
   int next;
   next = (fifoRp + 1) & (MAX_FIFO_COUNT - 1);
   if (next == fifoWp) { /* empty */
-    return fifoBuf[fifoRp];
+    return 0xff;
+    //return fifoBuf[fifoRp];
   }
   fifoRp = next;
   return fifoBuf[fifoRp];
@@ -78,7 +81,7 @@ ISR(TIM0_COMPA_vect)
   if (div_count < timer_div) {
     div_count++;
   } else {
-    OCR1B = fifo_read();
+    OCR1B = fifo_read() >> 2;
     div_count = 0;
   }
 }
@@ -323,6 +326,7 @@ replay:
             }
             tmp = *(uint16_t *)&buf[p+2]; /* the number of channels */
             if (tmp != 1) return; /* only 1 (mono) is accepted */
+            /* Max Fs is 16000 Hz */
             Fs = *(uint32_t *)&buf[p+4]; /* sample rate */
             p += size; /* to the head of the next chunk */
             break;
@@ -342,13 +346,12 @@ replay:
     } /* end a scope for a buffer */
 
     /*
-     *  Settings for Timer 1 (250kHz PWM carrier)
+     *  Settings for Timer 1 (125kHz PWM carrier)
      */
-    PLLCSR = (1<<PCKE)|(1<<PLLE); /* Select PLL clock for TC1.ck */
-    OCR1C = 0xFF; /* TOP value. PWM resolution. Max PWM width. */
+    OCR1C = 63; /* TOP value. PWM resolution. Max PWM width. */
     /* enable PWM1B. Both PB4 and PB3 are output. PB3 is a reversed output. */
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(1<<COM1B0);
-    TCCR1 = 0x01; /* Start TC1. CS[13:10] -- 0001(PCK(64MHz) in asynchronous mode) */
+    TCCR1 = 0x01; /* Start TC1. CS[13:10] -- 0001(CPU Clock) */
     TCNT1 = 0; /* Init the timer count */
 
 
@@ -363,7 +366,7 @@ replay:
     OCR0A  = (uint8_t)(ocrmax - 1);
     TCCR0A = (1<<WGM01)|(0<<WGM00);
     TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
-    /* Start TC0 as interval timer at 2MHz */
+    /* Start TC0 as interval timer at 1MHz */
     TIMSK = (1<<OCIE0A); /* Timer/Counter0 Output Compare Match A Interrupt Enable */
 
 
