@@ -26,7 +26,7 @@ FUSES = {
 #define SDA_HIGH()  do { PORTB |= (1<<PB0); } while (0)
 
 #define I2C_HALF_CLOCK      (1.3)
-#define I2C_FULL_CLOCK      (2.5)
+#define I2C_HIGH_TIME       (0.8)
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
@@ -90,7 +90,7 @@ void i2c_start(void) {
   SDA_HIGH();
   _delay_us(I2C_HALF_CLOCK);
   SCL_HIGH();
-  _delay_us(I2C_HALF_CLOCK);
+  _delay_us(I2C_HIGH_TIME);
   SDA_LOW();
   _delay_us(I2C_HALF_CLOCK);
   SCL_LOW();
@@ -100,7 +100,7 @@ void i2c_stop(void) {
   SDA_LOW();
   _delay_us(I2C_HALF_CLOCK);
   SCL_HIGH();
-  _delay_us(I2C_HALF_CLOCK);
+  _delay_us(I2C_HIGH_TIME);
   SDA_HIGH();
 }
 
@@ -109,16 +109,16 @@ void i2c_reset(void) {
   _delay_us(I2C_HALF_CLOCK);
 
   for (uint8_t i = 0; i < 8; i++) {
-    SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+    SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
     SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
   }
-  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
 
   /* generate start condition */
   SDA_LOW(); _delay_us(I2C_HALF_CLOCK);
 
   /* generate stop condition */
-  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
   SDA_HIGH(); _delay_us(I2C_HALF_CLOCK);
 
   /* down bus */
@@ -135,7 +135,7 @@ uint8_t i2c_transmit(uint8_t data) {
       SDA_LOW();
     }
     _delay_us(I2C_HALF_CLOCK);
-    SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+    SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
     SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
   }
   /* Receive ACK */
@@ -147,7 +147,7 @@ uint8_t i2c_transmit(uint8_t data) {
     /* NACK */
     nack = 1;
   }
-  _delay_us(I2C_HALF_CLOCK);
+  _delay_us(I2C_HIGH_TIME);
   SCL_LOW();
   DDRB |= (1<<DDB0); /* SDA as output. */
   return nack;
@@ -161,7 +161,7 @@ uint8_t i2c_receive(uint8_t nack) {
   for (uint8_t i = 0; i < 8; i++) {
     buf <<= 1;
     SCL_HIGH();
-    _delay_us(I2C_HALF_CLOCK);
+    _delay_us(I2C_HIGH_TIME);
     if ( ((1<<PINB0) & PINB) != 0) {
       buf += 1;
     }
@@ -177,7 +177,7 @@ uint8_t i2c_receive(uint8_t nack) {
     SDA_LOW();
   }
   _delay_us(I2C_HALF_CLOCK);
-  SCL_HIGH(); _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
   SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
   return buf;
 }
@@ -326,7 +326,7 @@ replay:
             }
             tmp = *(uint16_t *)&buf[p+2]; /* the number of channels */
             if (tmp != 1) return; /* only 1 (mono) is accepted */
-            /* Max Fs is 16000 Hz */
+            /* Max Fs is 16500 Hz */
             Fs = *(uint32_t *)&buf[p+4]; /* sample rate */
             p += size; /* to the head of the next chunk */
             break;
