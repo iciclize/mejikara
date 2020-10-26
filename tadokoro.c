@@ -226,6 +226,48 @@ uint16_t ima_decode(uint8_t nibble, struct IMA_WORK* work)
   return work->predictor;
 }
 
+#define RING_BUF_SIZE (16)
+
+struct rom_ring_buffer {
+  uint8_t ri;
+  uint8_t wi;
+  uint8_t ring[RING_BUF_SIZE];
+} rom_buf;
+
+void rom_buf_init(void) {
+  rom_buf.wi = rom_buf.ri = 0;
+}
+
+void rom_fetch_bytes(int8_t n) {
+  for (uint8_t i = 0; i < n; i++) {
+    rom_buf.ring[rom_buf.wi] = i2c_receive(0);
+    rom_buf.wi = (rom_buf.wi + 1) % RING_BUF_SIZE;
+  }
+}
+
+enum READ_SIZE {
+  READ_1BYTE,
+  READ_2BYTES,
+  READ_4BYTES
+} BYTES_READ;
+
+uint32_t rom_read_from_buffer(enum READ_SIZE n) {
+  uint32_t data = 0;
+  uint8_t bytes;
+  switch (n) {
+    case READ_1BYTE:  bytes = 1; break;
+    case READ_2BYTES: bytes = 2; break;
+    case READ_4BYTES: bytes = 4; break;
+  }
+
+  for (uint8_t i = 0; i < bytes; i++) {
+    data |= rom_buf.ring[rom_buf.ri] << (8*i);
+    rom_buf.ri = (rom_buf.ri + 1) % RING_BUF_SIZE;
+  }
+  
+  return data;
+}
+
 void play(void)
 {
   uint16_t num_samples = 0;
