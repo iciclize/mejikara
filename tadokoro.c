@@ -422,7 +422,6 @@ done_header:
     /*
      *  Settings for Timer 1 (6bit 125kHz PWM carrier)
      */
-    PLLCSR = (1<<PCKE)|(1<<PLLE); /* Select PLL clock for TC1.ck */
     OCR1C = 63; /* TOP value. PWM resolution. Max PWM width. */
 
     /* enable PWM1B. Both PB4 and PB3 are output. PB3 is a reversed output. */
