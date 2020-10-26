@@ -30,13 +30,13 @@ FUSES = {
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
+#define MAX_NUM_SOUND_TABLE (16)
 
 /*
  *  multiple sounds
  */
-#include "TADOKORO_SOUND_TABLE.h"
 uint8_t sound_index = 0;
-extern const uint16_t sound_table[NUM_SOUND_TABLE] __attribute__((__progmem__));
+uint16_t sound_table[MAX_NUM_SOUND_TABLE];
 volatile uint8_t play_irq = 0;
 
 volatile int8_t fifoWp;
@@ -234,9 +234,7 @@ struct rom_ring_buffer {
   uint8_t ring[RING_BUF_SIZE];
 } rom_buf;
 
-void rom_buf_init(void) {
-  rom_buf.wi = rom_buf.ri = 0;
-}
+#define ROM_BUF_INIT() do { rom_buf.wi = 0; rom_buf.ri = 0; } while(0)
 
 void rom_fetch_bytes(int8_t n) {
   for (uint8_t i = 0; i < n; i++) {
@@ -245,24 +243,32 @@ void rom_fetch_bytes(int8_t n) {
   }
 }
 
+void rom_seek_bytes(int8_t n) {
+  uint8_t times = 0;
+  rom_buf.ri = (rom_buf.ri + n) % RING_BUF_SIZE;
+  if (n >= RING_BUF_SIZE) {
+    n -= RING_BUF_SIZE;
+    times += 1;
+  }
+  for (uint8_t i = 0; i < times; i++)
+    rom_fetch_bytes(RING_BUF_SIZE);
+  rom_fetch_bytes(n);
+}
+
 enum READ_SIZE {
-  READ_1BYTE,
-  READ_2BYTES,
-  READ_4BYTES
+  READ_1BYTE = 1,
+  READ_2BYTES = 2,
+  READ_4BYTES = 4
 } BYTES_READ;
 
-uint32_t rom_read_from_buffer(enum READ_SIZE n) {
+uint32_t rom_read_from_buffer(uint8_t offset, enum READ_SIZE N) {
   uint32_t data = 0;
-  uint8_t bytes;
-  switch (n) {
-    case READ_1BYTE:  bytes = 1; break;
-    case READ_2BYTES: bytes = 2; break;
-    case READ_4BYTES: bytes = 4; break;
-  }
+  uint8_t pos;
 
-  for (uint8_t i = 0; i < bytes; i++) {
-    data |= rom_buf.ring[rom_buf.ri] << (8*i);
-    rom_buf.ri = (rom_buf.ri + 1) % RING_BUF_SIZE;
+  pos = (rom_buf.ri + offset) % RING_BUF_SIZE;
+  for (uint8_t i = 0; i < N; i++) {
+    data |= rom_buf.ring[pos] << (8*i);
+    pos = (pos + 1) % RING_BUF_SIZE;
   }
   
   return data;
@@ -302,20 +308,20 @@ replay:
    */
   {
     uint16_t Fs = 4545; /* sample rate */
-    uint16_t p; /* an index where to read */
 
-#define WAVE_SKIP_OFFSET (12)
-
-    uint16_t ROM_READ_OFFSET =
-      (uint16_t)pgm_read_word(&sound_table[sound_index]) + WAVE_SKIP_OFFSET;
-
-
-    /* 4 bytes in little endian -> uint32 */
+/* 4 bytes in little endian -> uint32 */
 #define SWAP_4(c1,c2,c3,c4) ( ((uint32_t)c4<<24) + ((uint32_t)c3<<16) \
     + ((uint16_t)c2<<8)+(uint8_t)c1)
 
+#define MAX_HEADER_READ_SIZE  (64)
+#define WAVE_SKIP_OFFSET      (12)
+
+    uint16_t ROM_READ_OFFSET =
+      (uint16_t)sound_table[sound_index] + WAVE_SKIP_OFFSET;
+    uint16_t offset_to_data = 0;
+
     /*
-     *   Set the read pointer to the position of the header (+skip_offset)
+     *   Set the read pointer to the header + skip_offset
      */
 
     i2c_reset(); /* important */
@@ -327,75 +333,101 @@ replay:
     i2c_start();
     i2c_transmit(0b10100001); /* control byte (read) */
 
-    /* begin a block scope for a large buffer */
-    {
-      /*
-       *  buffer 52 bytes, from the 12th byte to the 64th byte
-       */
-      uint8_t buf[52];
-      uint32_t id, size;
-      uint16_t tmp;
+    /*
+     *  buffer 16 bytes, from the 12th byte to the 28th byte
+     */
+    ROM_BUF_INIT();
+    rom_fetch_bytes(16);
 
-      for (uint8_t i = 0; i < 52; i++) {
-        buf[i] = i2c_receive(0);
-      }
-      i2c_receive(1);
-      i2c_stop();
-
-     /* at the WAVE_SKIP_OFFSETth byte (i.e. at the 12th, the head of 'fmt_').
-      * omit RIFFxxxxWAVE */
-      p = 0;
-      while (1) {
-        id = *(uint32_t *)&buf[p]; /* chunk id  */
-        size = *(uint32_t *)&buf[p+4]; /* size of data */
-        p += 8; /* to the chunk data */
-        switch (id) {
-          case SWAP_4('f', 'm', 't', ' '):
-            tmp = *(uint16_t *)&buf[p]; /* format id */
-            switch (tmp) {
+    /* at the WAVE_SKIP_OFFSETth byte (i.e. at the 12th, the head of 'fmt_').
+     * omit RIFFxxxxWAVE */
+    do {
+      uint32_t ckID, ckSize;
+      ckID = (uint32_t)rom_read_from_buffer(0, READ_4BYTES); /* chunk id  */
+      ckSize = (uint32_t)rom_read_from_buffer(4, READ_4BYTES); /* chunk size */
+      rom_seek_bytes(8); /* to the chunk data */
+      offset_to_data += 8; 
+      switch (ckID) {
+        case SWAP_4('f', 'm', 't', ' '):
+          {
+            uint16_t wFormatTag;
+            uint16_t nChannels;
+            uint16_t nBlockAlign;
+            uint32_t nSamplesPerSec;
+            wFormatTag = (uint16_t)rom_read_from_buffer(0, READ_2BYTES);
+            switch (wFormatTag) {
               case 0x0001: /* uncompressed linear PCM */
                 adpcm = 0;
                 break;
               case 0x0011: /* IMA-ADPCM */
                 adpcm = 1;
-                block_size = *(uint16_t *)&buf[p + 12];
+                nBlockAlign = (uint16_t)rom_read_from_buffer(12, READ_2BYTES);
+                block_size = nBlockAlign;
                 break;
               default:
-                return;
+                goto unsupported;
+                break;
             }
-            tmp = *(uint16_t *)&buf[p+2]; /* the number of channels */
-            if (tmp != 1) return; /* only 1 (mono) is accepted */
+            nChannels = (uint16_t)rom_read_from_buffer(2, READ_2BYTES);
+            if (nChannels != 1) goto unsupported; /* only 1 (mono) is accepted */
             /* Fs must be within 7850-16500Hz */
-            Fs = *(uint32_t *)&buf[p+4]; /* sample rate */
-            p += size; /* to the head of the next chunk */
-            break;
-          case SWAP_4('f', 'a', 'c', 't'):
-            num_samples = *(uint32_t *)&buf[p];
-            p += size; /* to the head of the next chunk */
-            break;
-          case SWAP_4('d', 'a', 't', 'a'):
-            if (num_samples == 0) num_samples = size;
-            goto done_header;
-            break;
-          default:
-            return;
-        }
+            nSamplesPerSec = (uint32_t)rom_read_from_buffer(4, READ_4BYTES);
+            Fs = nSamplesPerSec;
 
-        if (p < 52) continue;
+            rom_seek_bytes(ckSize);/* to the head of the next chunk */
+            offset_to_data += ckSize; 
+          }
+          break;
+        case SWAP_4('f', 'a', 'c', 't'):
+          {
+            uint32_t dwSampleLength;
+            dwSampleLength = (uint32_t)rom_read_from_buffer(0, READ_4BYTES);
+            num_samples = dwSampleLength;
 
-        return;
+            rom_seek_bytes(ckSize); /* to the head of the next chunk */
+            offset_to_data += ckSize;
+          }
+          break;
+        case SWAP_4('d', 'a', 't', 'a'):
+          if (num_samples == 0)
+            num_samples = ckSize;
+
+          goto done_header;
+          break;
+        default:
+          goto unsupported;
+          break;
       }
+    } while ( offset_to_data < (MAX_HEADER_READ_SIZE - WAVE_SKIP_OFFSET) );
 
-    } /* end a scope for a buffer */
+unsupported:
+    i2c_receive(1);
+    i2c_stop();
+    return;
+
+    uint16_t read_address; /* for a label syntax reason */
+done_header:
+    /*
+     *  Set the read pointer to the position of the data
+     */
+    read_address = ROM_READ_OFFSET + offset_to_data;
+    i2c_start();
+    i2c_transmit(0b10100000); /* control byte (write) */
+    i2c_transmit((uint8_t)(read_address>>8)); /* high */
+    i2c_transmit((uint8_t)read_address); /* low */
+    i2c_start();
+    i2c_transmit(0b10100001); /* control byte (read) */
+
 
     /*
-     *  Settings for Timer 1 (125kHz PWM carrier)
+     *  Settings for Timer 1 (6bit 125kHz PWM carrier)
      */
-done_header:
     PLLCSR = (1<<PCKE)|(1<<PLLE); /* Select PLL clock for TC1.ck */
     OCR1C = 63; /* TOP value. PWM resolution. Max PWM width. */
+
     /* enable PWM1B. Both PB4 and PB3 are output. PB3 is a reversed output. */
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(1<<COM1B0);
+
     TCCR1 = 0x01; /* Start TC1. CS[13:10] -- 0001(CPU Clock) */
     TCNT1 = 0; /* Init the timer count */
 
@@ -407,20 +439,9 @@ done_header:
     OCR0A  = (uint8_t)(ocrmax);
     TCCR0A = (1<<WGM01)|(0<<WGM00);
     TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
+
     /* Start TC0 as interval timer at 1MHz */
-    TIMSK = (1<<OCIE0A); /* Timer/Counter0 Output Compare Match A Interrupt Enable */
-
-
-    /*
-     *  Set the read pointer to the position of the data
-     */
-    i2c_start();
-    i2c_transmit(0b10100000); /* control byte (write) */
-    i2c_transmit((uint8_t)((p + ROM_READ_OFFSET)>>8)); /* high order address byte */
-    i2c_transmit((uint8_t)(p + ROM_READ_OFFSET)); /* low order address byte */
-    i2c_start();
-    i2c_transmit(0b10100001); /* control byte (read) */
-
+    TIMSK = (1<<OCIE0A); /* Timer/Counter0 Output Compare Match A */
   }
   /*
    *  WAV header reading end
@@ -500,7 +521,7 @@ int main(void) {
   GIMSK = (1<<INT0);
 
   while (1) {
-    sound_index = sound_index % NUM_SOUND_TABLE;
+    sound_index = sound_index % MAX_NUM_SOUND_TABLE;
     play();
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
     TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
