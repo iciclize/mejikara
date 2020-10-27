@@ -226,6 +226,7 @@ uint16_t ima_decode(uint8_t nibble, struct IMA_WORK* work)
   return work->predictor;
 }
 
+/* must be power of 2 */
 #define RING_BUF_SIZE (16)
 
 struct rom_ring_buffer {
@@ -237,40 +238,22 @@ struct rom_ring_buffer {
 #define ROM_BUF_INIT() do { rom_buf.wi = 0; rom_buf.ri = 0; } while (0)
 
 void rom_seek_bytes(int8_t n) {
-  rom_buf.ri = (rom_buf.ri + n) % RING_BUF_SIZE;
+  // rom_buf.ri = (rom_buf.ri + n) % RING_BUF_SIZE;
+  rom_buf.ri = (rom_buf.ri + n) & (RING_BUF_SIZE - 1);
   for (uint8_t i = 0; i < n; i++) {
     rom_buf.ring[rom_buf.wi] = i2c_receive(0);
-    rom_buf.wi = (rom_buf.wi + 1) % RING_BUF_SIZE;
+    rom_buf.wi = (rom_buf.wi + 1) & (RING_BUF_SIZE - 1);
   }
 }
-
-enum READ_SIZE {
-  READ_1BYTE = 1,
-  READ_2BYTES = 2,
-  READ_4BYTES = 4
-} BYTES_READ;
 
 uint16_t rom_read_from_buffer_2(uint8_t offset) {
   uint16_t data;
   uint8_t pos;
 
-  pos = (uint8_t)(rom_buf.ri + offset) % RING_BUF_SIZE;
+  pos = (uint8_t)(rom_buf.ri + offset) & (RING_BUF_SIZE - 1);
   data = rom_buf.ring[pos];
-  pos = (pos + 1) % RING_BUF_SIZE;
+  pos = (pos + 1) & (RING_BUF_SIZE - 1);
   data |= rom_buf.ring[pos] << 8;
-  
-  return data;
-}
-
-uint32_t rom_read_from_buffer_4(uint8_t offset) {
-  uint16_t data = 0;
-  uint8_t pos;
-
-  pos = (uint8_t)(rom_buf.ri + offset) % RING_BUF_SIZE;
-  for (uint8_t i = 0; i < 4; i++) {
-    data |= rom_buf.ring[pos] << (8*i);
-    pos = (pos + 1) % RING_BUF_SIZE;
-  }
   
   return data;
 }
@@ -279,7 +262,6 @@ void play(void)
 {
   uint16_t num_samples = 0;
   uint16_t block_size = 0;
-  uint8_t adpcm = 0;
   uint8_t chunk;
 
 replay:
@@ -312,6 +294,7 @@ replay:
 /* 4 bytes in little endian -> uint32 */
 #define SWAP_4(c1,c2,c3,c4) ( ((uint32_t)c4<<24) + ((uint32_t)c3<<16) \
   + ((uint16_t)c2<<8)+(uint8_t)c1)
+#define SWAP_2(c1,c2) ( ((uint16_t)c2<<8) + (uint8_t)c1 )
 
 #define MAX_HEADER_READ_SIZE  (64)
 #define WAVE_SKIP_OFFSET      (12)
@@ -348,21 +331,21 @@ replay:
     uint16_t nBlockAlign;
     uint32_t nSamplesPerSec;
     uint32_t dwSampleLength;
-    ckID = rom_read_from_buffer_4(0); /* chunk id  */
+    ckID = rom_read_from_buffer_2(0); /* chunk id  */
     /* Most Significant 2 bytes are always 0.
      * It's enough to read only Least Significant 2 bytes */
     ckSize = rom_read_from_buffer_2(4); /* chunk size */
     rom_seek_bytes(8); /* to the chunk data */
     offset_to_data += 8; 
     switch (ckID) {
-      case SWAP_4('f', 'm', 't', ' '):
+      //case SWAP_4('f', 'm', 't', ' '):
+      case SWAP_2('f', 'm'):
         wFormatTag = rom_read_from_buffer_2(0);
         switch (wFormatTag) {
           case 0x0001: /* uncompressed linear PCM */
-            adpcm = 0;
+            goto unsupported;
             break;
           case 0x0011: /* IMA-ADPCM */
-            adpcm = 1;
             nBlockAlign = rom_read_from_buffer_2(12);
             block_size = nBlockAlign;
             break;
@@ -378,13 +361,15 @@ replay:
         rom_seek_bytes(ckSize);/* to the head of the next chunk */
         offset_to_data += ckSize; 
         break;
-      case SWAP_4('f', 'a', 'c', 't'):
+      //case SWAP_4('f', 'a', 'c', 't'):
+      case SWAP_2('f', 'a'):
         dwSampleLength = rom_read_from_buffer_2(0);
         num_samples = dwSampleLength;
         rom_seek_bytes(ckSize); /* to the head of the next chunk */
         offset_to_data += ckSize;
         break;
-      case SWAP_4('d', 'a', 't', 'a'):
+      //case SWAP_4('d', 'a', 't', 'a'):
+      case SWAP_2('d', 'a'):
         if (num_samples == 0)
           num_samples = ckSize;
 
@@ -445,59 +430,44 @@ done_header:
   /*
    *  i2crom sequential read
    */
-  if (adpcm == 1) {
+  do {
+    struct IMA_WORK ima_work;
+    uint16_t samples_block; /* the rest of the samples in the current block */
+    const uint16_t wSamplesPerBlock
+      = (block_size - 4) * 2 + 1;
+
+    samples_block = wSamplesPerBlock;
+
+    chunk = i2c_receive(0); /* IMA Samp0 LoByte */
+    ima_work.predictor = (i2c_receive(0) << 8 | chunk); /* Hi:Lo */
+    ima_work.step_index = i2c_receive(0); /* IMA Step Table Index */
+    i2c_receive(0); /* IMA reserved byte */
+
+    fifo_write((ima_work.predictor >> 8) + 0x80);
+
     do {
-      struct IMA_WORK ima_work;
-      uint16_t samples_block; /* the rest of the samples in the current block */
-      const uint16_t wSamplesPerBlock
-        = (block_size - 4) * 2 + 1;
+      uint8_t nibble[2]; /* 0: low nibble[3:0], 1: high nibble[7:4] */
+      uint8_t ni;
 
-      samples_block = wSamplesPerBlock;
-
-      chunk = i2c_receive(0); /* IMA Samp0 LoByte */
-      ima_work.predictor = (i2c_receive(0) << 8 | chunk); /* Hi:Lo */
-      ima_work.step_index = i2c_receive(0); /* IMA Step Table Index */
-      i2c_receive(0); /* IMA reserved byte */
-
-      fifo_write((ima_work.predictor >> 8) + 0x80);
-
-      do {
-        uint8_t nibble[2]; /* 0: low nibble[3:0], 1: high nibble[7:4] */
-        uint8_t ni;
-
-        chunk = i2c_receive(0);
-        nibble[0] = chunk;
-        nibble[1] = chunk >> 4;
-
-        if (play_irq)
-          goto replay;
-
-        for (ni = 0; ni < 2; ni++) {
-          /* signed int 16 -> unsigned int 8 conversion step */
-          fifo_write((ima_decode(nibble[ni], &ima_work) >> 8) + 0x80);
-
-          while (FIFO_ISFULL());
-        }
-
-        samples_block -= 2;
-      } while (samples_block >= 2);
-
-      num_samples -= wSamplesPerBlock;
-    } while (num_samples >= 4);
-  } else {
-    while (num_samples > 0) {
       chunk = i2c_receive(0);
-
-      fifo_write(chunk);
+      nibble[0] = chunk;
+      nibble[1] = chunk >> 4;
 
       if (play_irq)
         goto replay;
 
-      while (FIFO_ISFULL());
+      for (ni = 0; ni < 2; ni++) {
+        /* signed int 16 -> unsigned int 8 conversion step */
+        fifo_write((ima_decode(nibble[ni], &ima_work) >> 8) + 0x80);
 
-      num_samples--;
-    }
-  }
+        while (FIFO_ISFULL());
+      }
+
+      samples_block -= 2;
+    } while (samples_block >= 2);
+
+    num_samples -= wSamplesPerBlock;
+  } while (num_samples >= 4);
 
   i2c_receive(1);
   i2c_stop();
