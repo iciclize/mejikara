@@ -31,12 +31,13 @@ FUSES = {
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
 
+#define MAX_NUM_SOUND_TABLE (20)
+
 /*
  *  multiple sounds
  */
-#include "TADOKORO_SOUND_TABLE.h"
-uint8_t sound_index = 0;
-extern const uint16_t sound_table[NUM_SOUND_TABLE] __attribute__((__progmem__));
+uint8_t sound_index;
+uint16_t sound_table[MAX_NUM_SOUND_TABLE];
 volatile uint8_t play_irq = 0;
 
 volatile int8_t fifoWp;
@@ -62,8 +63,7 @@ uint8_t fifo_read() {
   int next;
   next = (fifoRp + 1) & (MAX_FIFO_COUNT - 1);
   if (next == fifoWp) { /* empty */
-    return 0xff;
-    //return fifoBuf[fifoRp];
+    return fifoBuf[fifoRp];
   }
   fifoRp = next;
   return fifoBuf[fifoRp];
@@ -176,6 +176,15 @@ uint8_t i2c_receive(uint8_t nack) {
   return buf;
 }
 
+void i2c_set_read_address(uint16_t read_address) {
+  i2c_start();
+  i2c_transmit(0b10100000); /* control byte (write) */
+  i2c_transmit((uint8_t)(read_address >> 8)); /* high order address byte */
+  i2c_transmit((uint8_t)read_address); /* low order address byte */
+  i2c_start();
+  i2c_transmit(0b10100001); /* control byte (read) */
+}
+
 const int8_t ima_index_table[16] __attribute__((__progmem__)) = {
   -1, -1, -1, -1, 2, 4, 6, 8,
   -1, -1, -1, -1, 2, 4, 6, 8
@@ -262,6 +271,7 @@ void play(void)
 {
   uint16_t num_samples = 0;
   uint16_t block_size = 0;
+  uint8_t adpcm = 0;
   uint8_t chunk;
 
 replay:
@@ -300,7 +310,7 @@ replay:
 #define WAVE_SKIP_OFFSET      (12)
 
   uint16_t ROM_READ_OFFSET =
-    (uint16_t)pgm_read_word(&sound_table[sound_index]) + WAVE_SKIP_OFFSET;
+    (uint16_t)sound_table[sound_index] + WAVE_SKIP_OFFSET;
   uint16_t offset_to_data = 0;
 
   /*
@@ -309,12 +319,7 @@ replay:
 
   i2c_reset(); /* important */
 
-  i2c_start();
-  i2c_transmit(0b10100000); /* control byte (write) */
-  i2c_transmit((uint8_t)(ROM_READ_OFFSET >> 8)); /* high order address byte */
-  i2c_transmit((uint8_t)ROM_READ_OFFSET); /* low order address byte */
-  i2c_start();
-  i2c_transmit(0b10100001); /* control byte (read) */
+  i2c_set_read_address(ROM_READ_OFFSET);
 
   /*
    *  buffer 16 bytes, from the 12th byte to the 28th byte
@@ -325,7 +330,13 @@ replay:
   /* at the WAVE_SKIP_OFFSETth byte (i.e. at the 12th, the head of 'fmt_').
    * omit RIFFxxxxWAVE */
   while (1) {
-    uint32_t ckID, ckSize;
+    // uint32_t ckID, ckSize;
+    // uint16_t wFormatTag;
+    // uint16_t nChannels;
+    // uint16_t nBlockAlign;
+    // uint32_t nSamplesPerSec;
+    // uint32_t dwSampleLength;
+    uint16_t ckID, ckSize;
     uint16_t wFormatTag;
     uint16_t nChannels;
     uint16_t nBlockAlign;
@@ -343,9 +354,9 @@ replay:
         wFormatTag = rom_read_from_buffer_2(0);
         switch (wFormatTag) {
           case 0x0001: /* uncompressed linear PCM */
-            goto unsupported;
             break;
           case 0x0011: /* IMA-ADPCM */
+            adpcm = 1;
             nBlockAlign = rom_read_from_buffer_2(12);
             block_size = nBlockAlign;
             break;
@@ -358,6 +369,7 @@ replay:
         /* Fs must be within 7850-16500Hz */
         nSamplesPerSec = rom_read_from_buffer_2(4);
         Fs = nSamplesPerSec;
+
         rom_seek_bytes(ckSize);/* to the head of the next chunk */
         offset_to_data += ckSize; 
         break;
@@ -365,6 +377,7 @@ replay:
       case SWAP_2('f', 'a'):
         dwSampleLength = rom_read_from_buffer_2(0);
         num_samples = dwSampleLength;
+
         rom_seek_bytes(ckSize); /* to the head of the next chunk */
         offset_to_data += ckSize;
         break;
@@ -386,19 +399,14 @@ replay:
     goto unsupported;
   }
 
-  uint16_t read_address; /* for a label syntax reason */
 done_header:
   /*
    *  Set the read pointer to the position of the data
    */
-  read_address = ROM_READ_OFFSET + offset_to_data;
-  i2c_start();
-  i2c_transmit(0b10100000); /* control byte (write) */
-  i2c_transmit((uint8_t)(read_address>>8)); /* high */
-  i2c_transmit((uint8_t)read_address); /* low */
-  i2c_start();
-  i2c_transmit(0b10100001); /* control byte (read) */
+  i2c_receive(1);
+  i2c_stop();
 
+  i2c_set_read_address(ROM_READ_OFFSET + offset_to_data);
 
   /*
    *  Settings for Timer 1 (6bit 125kHz PWM carrier)
@@ -430,51 +438,59 @@ done_header:
   /*
    *  i2crom sequential read
    */
-  do {
-    struct IMA_WORK ima_work;
-    uint16_t samples_block; /* the rest of the samples in the current block */
-    const uint16_t wSamplesPerBlock
-      = (block_size - 4) * 2 + 1;
-
-    samples_block = wSamplesPerBlock;
-
-    chunk = i2c_receive(0); /* IMA Samp0 LoByte */
-    ima_work.predictor = (i2c_receive(0) << 8 | chunk); /* Hi:Lo */
-    ima_work.step_index = i2c_receive(0); /* IMA Step Table Index */
-    i2c_receive(0); /* IMA reserved byte */
-
-    fifo_write((ima_work.predictor >> 8) + 0x80);
-
+  if (adpcm) {
     do {
-      uint8_t nibble[2]; /* 0: low nibble[3:0], 1: high nibble[7:4] */
-      uint8_t ni;
+      struct IMA_WORK ima_work;
+      uint16_t samples_block; /* the rest of the samples in the current block */
+      const uint16_t wSamplesPerBlock
+        = (block_size - 4) * 2 + 1;
 
+      samples_block = wSamplesPerBlock;
+
+      chunk = i2c_receive(0); /* IMA Samp0 LoByte */
+      ima_work.predictor = (i2c_receive(0) << 8 | chunk); /* Hi:Lo */
+      ima_work.step_index = i2c_receive(0); /* IMA Step Table Index */
+      i2c_receive(0); /* IMA reserved byte */
+
+      fifo_write((ima_work.predictor >> 8) + 0x80);
+
+      do {
+        uint8_t nibble0, nibble1; /* 0: low nibble[3:0], 1: high nibble[7:4] */
+
+        chunk = i2c_receive(0);
+        nibble0 = chunk;
+        nibble1 = chunk >> 4;
+
+        if (play_irq)
+          goto replay;
+
+        fifo_write((ima_decode(nibble0, &ima_work) >> 8) + 0x80);
+        while (FIFO_ISFULL());
+
+        fifo_write((ima_decode(nibble1, &ima_work) >> 8) + 0x80);
+        while (FIFO_ISFULL());
+
+        samples_block -= 2;
+      } while (samples_block >= 2);
+
+      num_samples -= wSamplesPerBlock;
+    } while (num_samples >= 4);
+  } else {
+    while (num_samples > 0) {
       chunk = i2c_receive(0);
-      nibble[0] = chunk;
-      nibble[1] = chunk >> 4;
+
+      fifo_write(chunk);
 
       if (play_irq)
         goto replay;
 
-      for (ni = 0; ni < 2; ni++) {
-        /* signed int 16 -> unsigned int 8 conversion step */
-        fifo_write((ima_decode(nibble[ni], &ima_work) >> 8) + 0x80);
+      while (FIFO_ISFULL());
 
-        while (FIFO_ISFULL());
-      }
-
-      samples_block -= 2;
-    } while (samples_block >= 2);
-
-    num_samples -= wSamplesPerBlock;
-  } while (num_samples >= 4);
-
-  i2c_receive(1);
-  i2c_stop();
+      num_samples--;
+    }
+  }
 
   while ( !FIFO_ISEMPTY() );
-
-  return;
 
 unsupported:
   i2c_receive(1);
@@ -491,6 +507,21 @@ int main(void) {
   PORTB |= (1<<PB2); /* INT0 pullup */
   MCUCR = (0<<ISC01)|(0<<ISC00);
   GIMSK = (1<<INT0);
+
+  i2c_reset(); /* important */
+
+  i2c_set_read_address(0);
+
+  uint8_t NUM_SOUND_TABLE;
+
+  NUM_SOUND_TABLE = i2c_receive(0);
+  i2c_receive(0); /* drop high byte */
+  sound_index = 0;
+  for (uint8_t i = 0; i < NUM_SOUND_TABLE; i++) {
+    sound_table[i] = (uint16_t)i2c_receive(0) | ((uint16_t)i2c_receive(0) << 8);
+  }
+  i2c_receive(1);
+  i2c_stop();
 
   while (1) {
     sound_index = sound_index % NUM_SOUND_TABLE;
