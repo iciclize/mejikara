@@ -63,7 +63,7 @@ uint8_t fifo_read() {
   int next;
   next = (fifoRp + 1) & (MAX_FIFO_COUNT - 1);
   if (next == fifoWp) { /* empty */
-    return 0xFF;
+    // return 0xFF;
     return fifoBuf[fifoRp];
   }
   fifoRp = next;
@@ -362,7 +362,9 @@ replay:
         }
         nChannels = rom_read_from_buffer_2(2);
         if (nChannels != 1) goto unsupported; /* only 1 (mono) is accepted */
-        /* Fs must be within 4010-16500Hz */
+        /* Fs must be within following
+         * adpcm: 4010-17000Hz
+         * lpcm:  4010-18000Hz */
         nSamplesPerSec = rom_read_from_buffer_2(4);
         Fs = nSamplesPerSec;
 
