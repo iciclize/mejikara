@@ -185,6 +185,11 @@ void i2c_set_read_address(uint16_t read_address) {
   i2c_transmit(0b10100001); /* control byte (read) */
 }
 
+void i2c_end(void) {
+  i2c_receive(1);
+  i2c_stop();
+}
+
 const int8_t ima_index_table[16] __attribute__((__progmem__)) = {
   -1, -1, -1, -1, 2, 4, 6, 8,
   -1, -1, -1, -1, 2, 4, 6, 8
@@ -401,8 +406,7 @@ done_header:
   /*
    *  Set the read pointer to the position of the data
    */
-  i2c_receive(1);
-  i2c_stop();
+  i2c_end();
 
   i2c_set_read_address(ROM_READ_OFFSET + offset_to_data);
 
@@ -491,8 +495,7 @@ done_header:
   while ( !FIFO_ISEMPTY() );
 
 unsupported:
-  i2c_receive(1);
-  i2c_stop();
+  i2c_end();
   return;
 }
 
@@ -516,13 +519,20 @@ int main(void) {
   uint8_t NUM_SOUND_TABLE;
 
   NUM_SOUND_TABLE = i2c_receive(0);
-  i2c_receive(0); /* drop high byte */
-  sound_index = 0;
-  for (uint8_t i = 0; i < NUM_SOUND_TABLE; i++) {
-    sound_table[i] = i2c_receive(0) | ((uint16_t)i2c_receive(0) << 8);
+
+  if (NUM_SOUND_TABLE == 'R') {
+    /* Perhaps no header. 'R'IFF....WAVE */
+    NUM_SOUND_TABLE = 1;
+    sound_table[0] = 0;
+  } else {
+    i2c_receive(0); /* drop high byte */
+    for (uint8_t i = 0; i < NUM_SOUND_TABLE; i++) {
+      sound_table[i] = i2c_receive(0) | ((uint16_t)i2c_receive(0) << 8);
+    }
   }
-  i2c_receive(1);
-  i2c_stop();
+  i2c_end();
+
+  sound_index = 0;
 
   while (1) {
     sound_index = sound_index % NUM_SOUND_TABLE;
