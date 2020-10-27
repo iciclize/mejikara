@@ -239,19 +239,17 @@ uint16_t ima_decode(uint8_t nibble, struct IMA_WORK* work)
 #define RING_BUF_SIZE (16)
 
 struct rom_ring_buffer {
-  uint8_t ri;
-  uint8_t wi;
+  uint8_t i;
   uint8_t ring[RING_BUF_SIZE];
 } rom_buf;
 
-#define ROM_BUF_INIT() do { rom_buf.wi = 0; rom_buf.ri = 0; } while (0)
+#define ROM_BUF_INIT() do { rom_buf.i = 0; } while (0)
 
 void rom_seek_bytes(int8_t n) {
   // rom_buf.ri = (rom_buf.ri + n) % RING_BUF_SIZE;
-  rom_buf.ri = (rom_buf.ri + n) & (RING_BUF_SIZE - 1);
   for (uint8_t i = 0; i < n; i++) {
-    rom_buf.ring[rom_buf.wi] = i2c_receive(0);
-    rom_buf.wi = (rom_buf.wi + 1) & (RING_BUF_SIZE - 1);
+    rom_buf.ring[rom_buf.i] = i2c_receive(0);
+    rom_buf.i = (rom_buf.i + 1) & (RING_BUF_SIZE - 1);
   }
 }
 
@@ -259,7 +257,7 @@ uint16_t rom_read_from_buffer_2(uint8_t offset) {
   uint16_t data;
   uint8_t pos;
 
-  pos = (uint8_t)(rom_buf.ri + offset) & (RING_BUF_SIZE - 1);
+  pos = (uint8_t)(rom_buf.i + offset) & (RING_BUF_SIZE - 1);
   data = rom_buf.ring[pos];
   pos = (pos + 1) & (RING_BUF_SIZE - 1);
   data |= rom_buf.ring[pos] << 8;
@@ -299,7 +297,7 @@ replay:
   /*
    *  Read a WAV header. Start timers. Set a read addres.
    */
-  uint16_t Fs = 4545; /* sample rate */
+  uint16_t Fs = 8000; /* sample rate */
 
 /* 4 bytes in little endian -> uint32 */
 #define SWAP_4(c1,c2,c3,c4) ( ((uint32_t)c4<<24) + ((uint32_t)c3<<16) \
@@ -508,6 +506,9 @@ int main(void) {
   MCUCR = (0<<ISC01)|(0<<ISC00);
   GIMSK = (1<<INT0);
 
+  DDRB = (1<<DDB4)|(1<<DDB3)|(1<<DDB1)|(1<<DDB0);
+  PORTB &= ~((1<<PB4)|(1<<PB3)|(1<<PB1)|(1<<PB0));
+
   i2c_reset(); /* important */
 
   i2c_set_read_address(0);
@@ -518,7 +519,7 @@ int main(void) {
   i2c_receive(0); /* drop high byte */
   sound_index = 0;
   for (uint8_t i = 0; i < NUM_SOUND_TABLE; i++) {
-    sound_table[i] = (uint16_t)i2c_receive(0) | ((uint16_t)i2c_receive(0) << 8);
+    sound_table[i] = i2c_receive(0) | ((uint16_t)i2c_receive(0) << 8);
   }
   i2c_receive(1);
   i2c_stop();
