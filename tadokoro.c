@@ -283,14 +283,6 @@ replay:
   if (play_irq)
     goto replay;
 
-  /* set DDRB -- Data Direction Registor for port B
-   * Set PB4, PB3, PB1, PB0 as OUTPUT
-   * PB4: Sound output,
-   * PB3: Reversed sound output,
-   * PB1: SCL,
-   * PB0: SDA
-   */
-  DDRB = (1<<DDB4)|(1<<DDB3)|(1<<DDB1)|(1<<DDB0);
   PORTB &= ~((1<<PB4)|(1<<PB3)|(1<<PB1)|(1<<PB0));
 
   FIFO_INIT();
@@ -509,6 +501,13 @@ int main(void) {
   MCUCR = (0<<ISC01)|(0<<ISC00);
   GIMSK = (1<<INT0);
 
+  /* set DDRB -- Data Direction Registor for port B
+   * Set PB4, PB3, PB1, PB0 as OUTPUT
+   * PB4: Sound output,
+   * PB3: Reversed sound output,
+   * PB1: SCL,
+   * PB0: SDA
+   */
   DDRB = (1<<DDB4)|(1<<DDB3)|(1<<DDB1)|(1<<DDB0);
   PORTB &= ~((1<<PB4)|(1<<PB3)|(1<<PB1)|(1<<PB0));
 
