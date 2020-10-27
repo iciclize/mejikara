@@ -63,6 +63,7 @@ uint8_t fifo_read() {
   int next;
   next = (fifoRp + 1) & (MAX_FIFO_COUNT - 1);
   if (next == fifoWp) { /* empty */
+    return 0xFF;
     return fifoBuf[fifoRp];
   }
   fifoRp = next;
@@ -294,7 +295,7 @@ replay:
   /*
    *  Read a WAV header. Start timers. Set a read addres.
    */
-  uint16_t Fs = 8000; /* sample rate */
+  uint16_t Fs = 4545; /* sample rate */
 
 /* 4 bytes in little endian -> uint32 */
 #define SWAP_4(c1,c2,c3,c4) ( ((uint32_t)c4<<24) + ((uint32_t)c3<<16) \
@@ -361,7 +362,7 @@ replay:
         }
         nChannels = rom_read_from_buffer_2(2);
         if (nChannels != 1) goto unsupported; /* only 1 (mono) is accepted */
-        /* Fs must be within 7850-16500Hz */
+        /* Fs must be within 4010-16500Hz */
         nSamplesPerSec = rom_read_from_buffer_2(4);
         Fs = nSamplesPerSec;
 
