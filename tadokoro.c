@@ -28,17 +28,17 @@ FUSES = {
 #define I2C_HALF_CLOCK      (1.3)
 #define I2C_HIGH_TIME       (0.8)
 
-/* MAX_FIFO_COUNT must be power of 2 (2^n) */
-#define MAX_FIFO_COUNT (8)
-
-#define MAX_NUM_SOUND_TABLE (20)
-
 /*
  *  multiple sounds
  */
+#define MAX_NUM_SOUND_TABLE (20)
+
 uint8_t sound_index;
 uint16_t sound_table[MAX_NUM_SOUND_TABLE];
 volatile uint8_t play_irq = 0;
+
+/* MAX_FIFO_COUNT must be power of 2 (2^n) */
+#define MAX_FIFO_COUNT (8)
 
 volatile int8_t fifoWp;
 volatile int8_t fifoRp;
@@ -420,8 +420,8 @@ done_header:
   /*
    *  Settings for Timer 0 (sound data)
    */
-  uint16_t ocrmax = (F_CPU / 8) / (Fs - 100/* speed adjustment here */);
-  OCR0A  = (uint8_t)(ocrmax);
+  uint16_t ocrmax = (F_CPU / 8) / (Fs - 450/* speed adjustment here */);
+  OCR0A  = (uint8_t)(ocrmax - 1);
   TCCR0A = (1<<WGM01)|(0<<WGM00);
   TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
 
