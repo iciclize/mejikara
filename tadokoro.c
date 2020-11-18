@@ -20,7 +20,8 @@ FUSES = {
   .low = 0xE2
 };
 
-#define FS_ADJUST (( +100 ))
+/* sampling period adjustment */
+#define OCRMAX_ADJUST (( 0 ))
 
 #define SCL_LOW()   do { PORTB &= ~(1<<PB1); } while (0)
 #define SCL_HIGH()  do { PORTB |= (1<<PB1); } while (0)
@@ -422,8 +423,8 @@ done_header:
   /*
    *  Settings for Timer 0 (sound data)
    */
-  uint16_t ocrmax = (F_CPU / 8) / (Fs + FS_ADJUST /* speed adjustment here */);
-  OCR0A  = (uint8_t)(ocrmax - 1);
+  uint16_t ocrmax = (F_CPU / 8) / (Fs);
+  OCR0A  = (uint8_t)(ocrmax - 1 + OCRMAX_ADJUST);
   TCCR0A = (1<<WGM01)|(0<<WGM00);
   TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
 
