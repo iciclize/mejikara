@@ -541,7 +541,7 @@ int main(void) {
     play();
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
     TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
-    PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
+    PORTB &= ~((1<<DDB4) | (1<<DDB3));
     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
     sleep_mode();
     sound_index++;
