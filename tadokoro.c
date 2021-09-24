@@ -15,9 +15,9 @@
 #include <avr/pgmspace.h>
 
 FUSES = {
-  .extended = 0xFF,
+  .low = 0xE2,
   .high = 0xDF,
-  .low = 0xE2
+  .extended = 0xFF
 };
 
 #define SCL_LOW()   do { PORTB &= ~(1<<PB1); } while (0)
@@ -36,8 +36,6 @@ FUSES = {
 /*
  *  multiple sounds
  */
-uint8_t sound_index;
-uint16_t sound_table[MAX_NUM_SOUND_TABLE];
 volatile uint8_t play_irq = 0;
 
 volatile int8_t fifoWp;
@@ -191,55 +189,6 @@ void i2c_end(void) {
   i2c_stop();
 }
 
-const int8_t ima_index_table[16] __attribute__((__progmem__)) = {
-  -1, -1, -1, -1, 2, 4, 6, 8,
-  -1, -1, -1, -1, 2, 4, 6, 8
-};
-
-const uint16_t ima_step_table[89] __attribute__((__progmem__)) = {
-  7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
-  19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
-  50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
-  130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
-  337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
-  876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
-  2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
-  5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
-  15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
-};
-
-struct IMA_WORK {
-  uint8_t step_index;
-  int16_t predictor;
-};
-
-uint16_t ima_decode(uint8_t nibble, struct IMA_WORK* work)
-{
-  uint16_t step;
-  int32_t diff;
-  int32_t tmp;
-
-  nibble &= 0b00001111;
-  step = (uint16_t)pgm_read_word(&ima_step_table[work->step_index]);
-
-  diff = step >> 3;
-  if (nibble & 0b0100) diff += step;
-  if (nibble & 0b0010) diff += (step >> 1);
-  if (nibble & 0b0001) diff += (step >> 2);
-  if (nibble & 0b1000) diff = -diff;
-
-  tmp = work->predictor + diff;
-  work->predictor = (int16_t)tmp;
-  if (tmp < -32768) work->predictor = -32768;
-  if (tmp > 32767) work->predictor = 32767;
-
-  tmp = work->step_index + (int8_t)pgm_read_byte(&ima_index_table[nibble]);
-  work->step_index = tmp;
-  if (tmp < 0) work->step_index = 0;
-  if (tmp > 88) work->step_index = 88;
-
-  return work->predictor;
-}
 
 /* must be power of 2 */
 #define RING_BUF_SIZE (16)
@@ -305,8 +254,7 @@ replay:
 #define MAX_HEADER_READ_SIZE  (64)
 #define WAVE_SKIP_OFFSET      (12)
 
-  uint16_t ROM_READ_OFFSET =
-    (uint16_t)sound_table[sound_index] + WAVE_SKIP_OFFSET;
+  uint16_t ROM_READ_OFFSET = WAVE_SKIP_OFFSET;
   uint16_t offset_to_data = 0;
 
   /*
@@ -337,7 +285,6 @@ replay:
     uint16_t nChannels;
     uint16_t nBlockAlign;
     uint32_t nSamplesPerSec;
-    uint32_t dwSampleLength;
     ckID = rom_read_from_buffer_2(0); /* chunk id  */
     /* Most Significant 2 bytes are always 0.
      * It's enough to read only Least Significant 2 bytes */
@@ -370,14 +317,6 @@ replay:
 
         rom_seek_bytes(ckSize);/* to the head of the next chunk */
         offset_to_data += ckSize; 
-        break;
-      //case SWAP_4('f', 'a', 'c', 't'):
-      case SWAP_2('f', 'a'):
-        dwSampleLength = rom_read_from_buffer_2(0);
-        num_samples = dwSampleLength;
-
-        rom_seek_bytes(ckSize); /* to the head of the next chunk */
-        offset_to_data += ckSize;
         break;
       //case SWAP_4('d', 'a', 't', 'a'):
       case SWAP_2('d', 'a'):
@@ -435,56 +374,17 @@ done_header:
   /*
    *  i2crom sequential read
    */
-  if (adpcm) {
-    do {
-      struct IMA_WORK ima_work;
-      uint16_t samples_block; /* the rest of the samples in the current block */
-      const uint16_t wSamplesPerBlock
-        = (block_size - 4) * 2 + 1;
+  while (num_samples > 0) {
+    chunk = i2c_receive(0);
 
-      samples_block = wSamplesPerBlock;
+    fifo_write(chunk);
 
-      chunk = i2c_receive(0); /* IMA Samp0 LoByte */
-      ima_work.predictor = (i2c_receive(0) << 8 | chunk); /* Hi:Lo */
-      ima_work.step_index = i2c_receive(0); /* IMA Step Table Index */
-      i2c_receive(0); /* IMA reserved byte */
+    if (play_irq)
+      goto replay;
 
-      fifo_write((ima_work.predictor >> 8) + 0x80);
+    while (FIFO_ISFULL());
 
-      do {
-        uint8_t nibble0, nibble1; /* 0: low nibble[3:0], 1: high nibble[7:4] */
-
-        chunk = i2c_receive(0);
-        nibble0 = chunk;
-        nibble1 = chunk >> 4;
-
-        if (play_irq)
-          goto replay;
-
-        fifo_write((ima_decode(nibble0, &ima_work) >> 8) + 0x80);
-        while (FIFO_ISFULL());
-
-        fifo_write((ima_decode(nibble1, &ima_work) >> 8) + 0x80);
-        while (FIFO_ISFULL());
-
-        samples_block -= 2;
-      } while (samples_block >= 2);
-
-      num_samples -= wSamplesPerBlock;
-    } while (num_samples >= 4);
-  } else {
-    while (num_samples > 0) {
-      chunk = i2c_receive(0);
-
-      fifo_write(chunk);
-
-      if (play_irq)
-        goto replay;
-
-      while (FIFO_ISFULL());
-
-      num_samples--;
-    }
+    num_samples--;
   }
 
   while ( !FIFO_ISEMPTY() );
@@ -516,34 +416,12 @@ int main(void) {
 
   i2c_reset(); /* important */
 
-  i2c_set_read_address(0);
-
-  uint8_t NUM_SOUND_TABLE;
-
-  NUM_SOUND_TABLE = i2c_receive(0);
-
-  if (NUM_SOUND_TABLE == 'R') {
-    /* Perhaps no header. 'R'IFF....WAVE */
-    NUM_SOUND_TABLE = 1;
-    sound_table[0] = 0;
-  } else {
-    i2c_receive(0); /* drop high byte */
-    for (uint8_t i = 0; i < NUM_SOUND_TABLE; i++) {
-      sound_table[i] = i2c_receive(0) | ((uint16_t)i2c_receive(0) << 8);
-    }
-  }
-  i2c_end();
-
-  sound_index = 0;
-
   while (1) {
-    sound_index = sound_index % NUM_SOUND_TABLE;
     play();
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
     TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
     PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
     sleep_mode();
-    sound_index++;
   }
 }
