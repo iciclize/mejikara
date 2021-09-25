@@ -26,12 +26,14 @@ FUSES = {
 #define SDA_HIGH()  do { PORTB |= (1<<PB0); } while (0)
 
 #define I2C_HALF_CLOCK      (1.3)
-#define I2C_HIGH_TIME       (0.8)
+#define I2C_HIGH_TIME       (0.6)
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
 
-volatile uint8_t play_irq = 0;
+uint16_t num_continue = 0;
+uint8_t previous_value = (0 << PINB2);
+uint8_t pressed = 0;
 
 volatile int8_t fifoWp;
 volatile int8_t fifoRp;
@@ -237,8 +239,6 @@ void play(void)
   uint8_t chunk;
 
 replay:
-  play_irq = 0;
-
   PORTB &= ~((1<<PB4)|(1<<PB3)|(1<<PB1)|(1<<PB0));
 
   FIFO_INIT();
@@ -356,7 +356,7 @@ done_header:
   /*
    *  Settings for Timer 0 (sound data)
    */
-  uint16_t ocrmax = (F_CPU / 8) / (Fs - 100/* speed adjustment here */);
+  uint16_t ocrmax = (F_CPU / 8) / (Fs - 0/* speed adjustment here */);
   OCR0A  = (uint8_t)(ocrmax);
   TCCR0A = (1<<WGM01)|(0<<WGM00);
   TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
@@ -376,8 +376,19 @@ done_header:
 
     fifo_write(chunk);
 
-    if (play_irq)
+#define CHATTERING_THRESHOLD (200)
+    uint8_t current_value = PINB & (1 << PINB2);
+    num_continue = previous_value == current_value ? num_continue + 1 : 0;
+    if (num_continue > 60000)
+      num_continue = 60000;
+    if (pressed == 0 && current_value == (0 << PINB2) && num_continue > CHATTERING_THRESHOLD) {
+      /* released -> pressed */
+      pressed = 1;
       goto replay;
+    } else if (pressed == 1 && current_value == (1 << PINB2) && num_continue > CHATTERING_THRESHOLD) {
+      pressed = 0;
+    }
+    previous_value = current_value;
 
     while (FIFO_ISFULL());
 
@@ -393,16 +404,8 @@ unsupported:
 
 EMPTY_INTERRUPT(INT0_vect);
 
-/* PCINT2 */
-ISR(PCINT0_vect) {
-  play_irq = 1;
-}
-
 int main(void) {
   PORTB |= (1<<PB2); /* INT0 pullup */
-  MCUCR = (0<<ISC01)|(0<<ISC00);
-  GIMSK = (0<<INT0) | (1<<PCIE); /* disable low level. enable pin change */
-  PCMSK = (1<<PCINT2); /* enable Pin Change Mask for 0 */
 
   /* set DDRB -- Data Direction Registor for port B
    * Set PB4, PB3, PB1, PB0 as OUTPUT
@@ -417,15 +420,26 @@ int main(void) {
   i2c_reset(); /* important */
 
   while (1) {
-    play();
-    cli();
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
     TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
     PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
+
+    cli();
+    MCUCR = (0<<ISC01)|(0<<ISC00); /* wake up by low level */
+    GIMSK = (1<<INT0); /* enable interrupt */
+
     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-    GIMSK = (1<<INT0) | (0<<PCIE); /* enable low level. disable pin change */
+
+    /* sleep sequence from the avr-libc's home page */
+    sleep_enable();
+    sleep_bod_disable();
     sei();
-    sleep_mode();
-    GIMSK = (0<<INT0) | (1<<PCIE); /* disable low level. enable pin change */
+    sleep_cpu();
+    /* now woken up */
+    sleep_disable();
+
+    GIMSK = (0<<INT0); /* disable interrupt */
+
+    play();
   }
 }
