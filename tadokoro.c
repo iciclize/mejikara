@@ -31,11 +31,6 @@ FUSES = {
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
 
-#define MAX_NUM_SOUND_TABLE (20)
-
-/*
- *  multiple sounds
- */
 volatile uint8_t play_irq = 0;
 
 volatile int8_t fifoWp;
@@ -208,6 +203,22 @@ void rom_seek_bytes(int8_t n) {
   }
 }
 
+uint32_t rom_read_from_buffer_4(uint8_t offset) {
+  uint32_t data;
+  uint8_t pos;
+
+  pos = (uint8_t)(rom_buf.i + offset) & (RING_BUF_SIZE - 1);
+  data = (uint32_t)rom_buf.ring[pos];
+  pos = (pos + 1) & (RING_BUF_SIZE - 1);
+  data |= (uint32_t)rom_buf.ring[pos] << 8;
+  pos = (pos + 1) & (RING_BUF_SIZE - 1);
+  data |= (uint32_t)rom_buf.ring[pos] << 16;
+  pos = (pos + 1) & (RING_BUF_SIZE - 1);
+  data |= (uint32_t)rom_buf.ring[pos] << 24;
+  
+  return data;
+}
+
 uint16_t rom_read_from_buffer_2(uint8_t offset) {
   uint16_t data;
   uint8_t pos;
@@ -223,15 +234,10 @@ uint16_t rom_read_from_buffer_2(uint8_t offset) {
 void play(void)
 {
   uint16_t num_samples = 0;
-  uint16_t block_size = 0;
-  uint8_t adpcm = 0;
   uint8_t chunk;
 
 replay:
   play_irq = 0;
-
-  if (play_irq)
-    goto replay;
 
   PORTB &= ~((1<<PB4)|(1<<PB3)|(1<<PB1)|(1<<PB0));
 
@@ -280,29 +286,21 @@ replay:
     // uint16_t nBlockAlign;
     // uint32_t nSamplesPerSec;
     // uint32_t dwSampleLength;
-    uint16_t ckID, ckSize;
+    uint32_t ckID, ckSize;
     uint16_t wFormatTag;
     uint16_t nChannels;
-    uint16_t nBlockAlign;
     uint32_t nSamplesPerSec;
-    ckID = rom_read_from_buffer_2(0); /* chunk id  */
-    /* Most Significant 2 bytes are always 0.
-     * It's enough to read only Least Significant 2 bytes */
-    ckSize = rom_read_from_buffer_2(4); /* chunk size */
+    ckID = rom_read_from_buffer_4(0); /* chunk id  */
+    ckSize = rom_read_from_buffer_4(4); /* chunk size */
     rom_seek_bytes(8); /* to the chunk data */
     offset_to_data += 8; 
     switch (ckID) {
-      //case SWAP_4('f', 'm', 't', ' '):
-      case SWAP_2('f', 'm'):
+      case SWAP_4('f', 'm', 't', ' '):
         wFormatTag = rom_read_from_buffer_2(0);
         switch (wFormatTag) {
           case 0x0001: /* uncompressed linear PCM */
             break;
           case 0x0011: /* IMA-ADPCM */
-            adpcm = 1;
-            nBlockAlign = rom_read_from_buffer_2(12);
-            block_size = nBlockAlign;
-            break;
           default:
             goto unsupported;
             break;
@@ -318,8 +316,7 @@ replay:
         rom_seek_bytes(ckSize);/* to the head of the next chunk */
         offset_to_data += ckSize; 
         break;
-      //case SWAP_4('d', 'a', 't', 'a'):
-      case SWAP_2('d', 'a'):
+      case SWAP_4('d', 'a', 't', 'a'):
         if (num_samples == 0)
           num_samples = ckSize;
 
@@ -394,15 +391,18 @@ unsupported:
   return;
 }
 
-ISR(INT0_vect)
-{
+EMPTY_INTERRUPT(INT0_vect);
+
+/* PCINT2 */
+ISR(PCINT0_vect) {
   play_irq = 1;
 }
 
 int main(void) {
   PORTB |= (1<<PB2); /* INT0 pullup */
   MCUCR = (0<<ISC01)|(0<<ISC00);
-  GIMSK = (1<<INT0);
+  GIMSK = (0<<INT0) | (1<<PCIE); /* disable low level. enable pin change */
+  PCMSK = (1<<PCINT2); /* enable Pin Change Mask for 0 */
 
   /* set DDRB -- Data Direction Registor for port B
    * Set PB4, PB3, PB1, PB0 as OUTPUT
@@ -418,10 +418,14 @@ int main(void) {
 
   while (1) {
     play();
+    cli();
     GTCCR = (1<<PWM1B)|(0<<COM1B1)|(0<<COM1B0); /* detach OC1B(PB4,PB3) */
     TCCR1 = 0x00; /* Stop TC1. CS13-10: 0000 */
     PORTB |= (1<<DDB0) | (1<<DDB1) | (1<<DDB4) | (1<<DDB3);
     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+    GIMSK = (1<<INT0) | (0<<PCIE); /* enable low level. disable pin change */
+    sei();
     sleep_mode();
+    GIMSK = (0<<INT0) | (1<<PCIE); /* disable low level. enable pin change */
   }
 }
