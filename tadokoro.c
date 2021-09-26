@@ -26,13 +26,12 @@ FUSES = {
 #define SDA_HIGH()  do { PORTB |= (1<<PB0); } while (0)
 
 #define I2C_HALF_CLOCK      (1.3)
-#define I2C_HIGH_TIME       (0.6)
+#define I2C_HIGH_TIME       (0.8)
 
 /* MAX_FIFO_COUNT must be power of 2 (2^n) */
 #define MAX_FIFO_COUNT (8)
 
-uint16_t num_continue = 0;
-uint8_t previous_value = (0 << PINB2);
+uint16_t detect_countdown = 0;
 uint8_t pressed = 0;
 
 volatile int8_t fifoWp;
@@ -376,19 +375,29 @@ done_header:
 
     fifo_write(chunk);
 
-#define CHATTERING_THRESHOLD (200)
-    uint8_t current_value = PINB & (1 << PINB2);
-    num_continue = previous_value == current_value ? num_continue + 1 : 0;
-    if (num_continue > 60000)
-      num_continue = 60000;
-    if (pressed == 0 && current_value == (0 << PINB2) && num_continue > CHATTERING_THRESHOLD) {
-      /* released -> pressed */
-      pressed = 1;
-      goto replay;
-    } else if (pressed == 1 && current_value == (1 << PINB2) && num_continue > CHATTERING_THRESHOLD) {
-      pressed = 0;
+    if (detect_countdown >= 2) {
+      detect_countdown--;
+    } else if (detect_countdown == 1) {
+      detect_countdown--;
+      if (pressed == 0) {
+        if (bit_is_clear(PINB, PINB2)) {
+          pressed = 1;
+          goto replay;
+        }
+      } else {
+        if (bit_is_set(PINB, PINB2)) {
+          pressed = 0;
+        }
+      }
+    } else if (detect_countdown == 0) {
+      if (pressed == 0) {
+        if (bit_is_clear(PINB, PINB2))
+          detect_countdown = 300;
+      } else {
+        if (bit_is_set(PINB, PINB2))
+          detect_countdown = 300;
+      }
     }
-    previous_value = current_value;
 
     while (FIFO_ISFULL());
 
