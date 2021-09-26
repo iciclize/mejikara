@@ -90,53 +90,26 @@ uint8_t pressed = 0;
 
 
 /*
- * Ring buffer for reading a header
+ * Read/Seek for reading a header
  */
 
-// must be power of 2
-#define RING_BUF_SIZE (16)
-
-struct rom_ring_buffer {
-  uint8_t i;
-  uint8_t ring[RING_BUF_SIZE];
-} rom_buf;
-
-#define ROM_BUF_INIT() do { rom_buf.i = 0; } while (0)
-
-void rom_seek_bytes(int8_t n) {
-  // rom_buf.ri = (rom_buf.ri + n) % RING_BUF_SIZE;
-  for (uint8_t i = 0; i < n; i++) {
-    rom_buf.ring[rom_buf.i] = i2c_receive(0);
-    rom_buf.i = (rom_buf.i + 1) & (RING_BUF_SIZE - 1);
-  }
-}
-
-uint32_t rom_read_from_buffer_4(uint8_t offset) {
-  uint32_t data;
-  uint8_t pos;
-
-  pos = (uint8_t)(rom_buf.i + offset) & (RING_BUF_SIZE - 1);
-  data = (uint32_t)rom_buf.ring[pos];
-  pos = (pos + 1) & (RING_BUF_SIZE - 1);
-  data |= (uint32_t)rom_buf.ring[pos] << 8;
-  pos = (pos + 1) & (RING_BUF_SIZE - 1);
-  data |= (uint32_t)rom_buf.ring[pos] << 16;
-  pos = (pos + 1) & (RING_BUF_SIZE - 1);
-  data |= (uint32_t)rom_buf.ring[pos] << 24;
-  
+uint32_t read_rom_4() {
+  uint32_t data = 0;
+  for (uint8_t i = 0; i < 4; i++)
+    data |= (uint32_t)i2c_receive(0) << (8 * i);
   return data;
 }
 
-uint16_t rom_read_from_buffer_2(uint8_t offset) {
-  uint16_t data;
-  uint8_t pos;
-
-  pos = (uint8_t)(rom_buf.i + offset) & (RING_BUF_SIZE - 1);
-  data = rom_buf.ring[pos];
-  pos = (pos + 1) & (RING_BUF_SIZE - 1);
-  data |= rom_buf.ring[pos] << 8;
-  
+uint16_t read_rom_2() {
+  uint16_t data = 0;
+  for (uint8_t i = 0; i < 2; i++)
+    data |= (uint16_t)i2c_receive(0) << (8 * i);
   return data;
+}
+
+void seek_rom_bytes(uint8_t n) {
+  for (uint8_t i = 0; i < n; i++)
+    i2c_receive(0);
 }
 
 
@@ -180,46 +153,54 @@ replay:
   + ((uint16_t)c2<<8)+(uint8_t)c1)
 #define SWAP_2(c1,c2) ( ((uint16_t)c2<<8) + (uint8_t)c1 )
 
-#define MAX_HEADER_READ_SIZE  (64)
-#define WAVE_SKIP_OFFSET      (12)
+#define RIFF_WAVE_POSITION    (0)
 
-  uint16_t ROM_READ_OFFSET = WAVE_SKIP_OFFSET;
-  uint16_t offset_to_data = 0;
+  //
+  // Set the read pointer to the head of RIFF????WAVE
+  //
 
-  /*
-   *   Set the read pointer to the header + skip_offset
-   */
+  // important
+  i2c_reset();
+  i2c_set_read_address(RIFF_WAVE_POSITION);
 
-  i2c_reset(); /* important */
+  // read 0-3 bytes of the ROM
+  if (read_rom_4() != SWAP_4('R', 'I', 'F', 'F')) {
+    goto unsupported;
+  }
 
-  i2c_set_read_address(ROM_READ_OFFSET);
+  // skip 4-7 bytes of the ROM
+  seek_rom_bytes(4);
 
-  /*
-   *  buffer 16 bytes, from the 12th byte to the 28th byte
-   */
-  ROM_BUF_INIT();
-  rom_seek_bytes(RING_BUF_SIZE);
+  // read 8-11 bytes of the ROM
+  if (read_rom_4() != SWAP_4('W', 'A', 'V', 'E')) {
+    goto unsupported;
+  }
 
-  /* at the WAVE_SKIP_OFFSETth byte (i.e. at the 12th, the head of 'fmt_').
-   * omit RIFFxxxxWAVE */
+  // now at the "fmt " chunk
+
+  uint8_t content_address = 0;
+
   while (1) {
-    // uint32_t ckID, ckSize;
-    // uint16_t wFormatTag;
-    // uint16_t nChannels;
-    // uint16_t nBlockAlign;
-    // uint32_t nSamplesPerSec;
-    // uint32_t dwSampleLength;
     uint32_t ckID, ckSize;
     uint16_t wFormatTag;
     uint16_t nChannels;
     uint32_t nSamplesPerSec;
-    ckID = rom_read_from_buffer_4(0); /* chunk id  */
-    ckSize = rom_read_from_buffer_4(4); /* chunk size */
-    rom_seek_bytes(8); /* to the chunk data */
-    offset_to_data += 8; 
+
+    // Now at the head of every chunk
+    uint8_t chunk_remaining_size;
+
+    ckID = read_rom_4(); /* chunk id  */
+    ckSize = read_rom_4(); /* chunk size */
+
+    chunk_remaining_size = ckSize;
+    content_address += 8;
+
     switch (ckID) {
       case SWAP_4('f', 'm', 't', ' '):
-        wFormatTag = rom_read_from_buffer_2(0);
+
+        wFormatTag = read_rom_2();
+        chunk_remaining_size -= 2;
+        
         switch (wFormatTag) {
           case 0x0001: /* uncompressed linear PCM */
             break;
@@ -228,62 +209,76 @@ replay:
             goto unsupported;
             break;
         }
-        nChannels = rom_read_from_buffer_2(2);
-        if (nChannels != 1) goto unsupported; /* only 1 (mono) is accepted */
-        /* Fs must be within following
-         * adpcm: 4010-17000Hz
-         * lpcm:  4010-18000Hz */
-        nSamplesPerSec = rom_read_from_buffer_2(4);
+
+        nChannels = read_rom_2();
+        chunk_remaining_size -= 2;
+
+        // only 1 (mono) is accepted
+        if (nChannels != 1)
+          goto unsupported;
+
+        nSamplesPerSec = read_rom_4();
+        chunk_remaining_size -= 4;
+
+        // Fs must be within below
+        // adpcm: 4010-17000Hz
+        // lpcm:  4010-18000Hz
         Fs = nSamplesPerSec;
 
-        rom_seek_bytes(ckSize);/* to the head of the next chunk */
-        offset_to_data += ckSize; 
+        // to the head of the next chunk
+        seek_rom_bytes(chunk_remaining_size);
+
+        content_address += ckSize;
         break;
+
       case SWAP_4('d', 'a', 't', 'a'):
         num_samples = ckSize;
         goto done_header;
         break;
+
       default:
         goto unsupported;
         break;
     }
-
-    if ( offset_to_data < (MAX_HEADER_READ_SIZE - WAVE_SKIP_OFFSET) )
-      continue;
-
-    goto unsupported;
   }
 
 done_header:
-  /*
-   *  Set the read pointer to the position of the data
-   */
+  // Set the read pointer to the position of the data
   i2c_end();
+  i2c_set_read_address(content_address);
 
-  i2c_set_read_address(ROM_READ_OFFSET + offset_to_data);
+  //
+  // Settings for Timer 1 (6bit 125kHz PWM carrier)
+  //
 
-  /*
-   *  Settings for Timer 1 (6bit 125kHz PWM carrier)
-   */
-  OCR1C = 63; /* TOP value. PWM resolution. Max PWM width. */
+  // TOP value. PWM resolution. Max PWM width.
+  OCR1C = 63;
 
-  /* enable PWM1B. Both PB4 and PB3 are output. PB3 is a reversed output. */
+  // enable PWM1B. Both PB4 and PB3 are output. PB3 is a reversed output.
   GTCCR = (1<<PWM1B)|(0<<COM1B1)|(1<<COM1B0);
 
-  TCCR1 = 0x01; /* Start TC1. CS[13:10] -- 0001(CPU Clock) */
-  TCNT1 = 0; /* Init the timer count */
+  // Start TC1. CS[13:10] -- 0001(CPU Clock)
+  TCCR1 = 0x01;
+
+  // Init the timer count
+  TCNT1 = 0;
 
 
-  /*
-   *  Settings for Timer 0 (sound data)
-   */
+  //
+  // Settings for Timer 0 (sound data)
+  //
+
   uint16_t ocrmax = (F_CPU / 8) / (Fs - 0/* speed adjustment here */);
   OCR0A  = (uint8_t)(ocrmax);
   TCCR0A = (1<<WGM01)|(0<<WGM00);
   TCCR0B = (0<<WGM02)|(0<<CS02)|(1<<CS01)|(0<<CS00); /* clock select div8 */
 
-  /* Start TC0 as interval timer at 1MHz */
-  TIMSK = (1<<OCIE0A); /* Timer/Counter0 Output Compare Match A */
+  //
+  // Start TC0 as interval timer at 1MHz */
+  //
+
+  // Timer/Counter0 Output Compare Match A
+  TIMSK = (1<<OCIE0A);
 
   /*
    *  WAV header reading end
