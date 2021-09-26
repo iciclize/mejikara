@@ -1,4 +1,4 @@
-build: tadokoro.o
+build:
 	make tadokoro.o
 	make tadokoro.s
 
