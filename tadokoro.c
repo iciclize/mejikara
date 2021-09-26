@@ -42,7 +42,6 @@ uint8_t fifoBuf[MAX_FIFO_COUNT];
 #define FIFO_INIT()  do { fifoWp = 1; fifoRp = 0; } while (0)
 
 void fifo_write(uint8_t v) {
-  cli();
   if (fifoWp == fifoRp) {
     // full
     return;
@@ -50,7 +49,6 @@ void fifo_write(uint8_t v) {
   fifoBuf[fifoWp] = v;
   /* optimization for (fifoWp + 1) % MAX_FIFO_COUNT */
   fifoWp = (fifoWp + 1) & (MAX_FIFO_COUNT - 1);
-  sei();
 }
 
 uint8_t fifo_read() {
@@ -316,9 +314,7 @@ replay:
         offset_to_data += ckSize; 
         break;
       case SWAP_4('d', 'a', 't', 'a'):
-        if (num_samples == 0)
-          num_samples = ckSize;
-
+        num_samples = ckSize;
         goto done_header;
         break;
       default:
@@ -373,7 +369,9 @@ done_header:
   while (num_samples > 0) {
     chunk = i2c_receive(0);
 
+    cli();
     fifo_write(chunk);
+    sei();
 
     if (detect_countdown >= 2) {
       detect_countdown--;
