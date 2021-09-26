@@ -20,6 +20,10 @@ FUSES = {
   .extended = 0xFF
 };
 
+/*
+ *  Software i2c routines
+ */
+
 #define SCL_LOW()   do { PORTB &= ~(1<<PB1); } while (0)
 #define SCL_HIGH()  do { PORTB |= (1<<PB1); } while (0)
 #define SDA_LOW()   do { PORTB &= ~(1<<PB0); } while (0)
@@ -28,11 +32,22 @@ FUSES = {
 #define I2C_HALF_CLOCK      (1.3)
 #define I2C_HIGH_TIME       (0.8)
 
-/* MAX_FIFO_COUNT must be power of 2 (2^n) */
-#define MAX_FIFO_COUNT (8)
+// prototype declaration
+void i2c_start(void);
+void i2c_stop(void);
+void i2c_reset(void);
+uint8_t i2c_transmit(uint8_t data);
+uint8_t i2c_receive(uint8_t nack);
+void i2c_set_read_address(uint16_t read_address);
+void i2c_end(void);
 
-uint16_t detect_countdown = 0;
-uint8_t pressed = 0;
+
+/*
+ * Sound buffer
+ */
+
+// MAX_FIFO_COUNT must be power of 2 (2^n) for mod optimization
+#define MAX_FIFO_COUNT (8)
 
 volatile int8_t fifoWp;
 volatile int8_t fifoRp;
@@ -65,126 +80,20 @@ uint8_t fifo_read() {
 #define FIFO_ISFULL() (fifoRp == fifoWp)
 #define FIFO_ISEMPTY() (((fifoRp+1)&(MAX_FIFO_COUNT-1)) == fifoWp)
 
+
 /*
- * be called every sample cycle
+ * Button input detection with chattering elimination
  */
-ISR(TIM0_COMPA_vect)
-{
-  OCR1B = fifo_read() >> 2;
-}
 
-void i2c_start(void) {
-  SDA_HIGH();
-  _delay_us(I2C_HALF_CLOCK);
-  SCL_HIGH();
-  _delay_us(I2C_HIGH_TIME);
-  SDA_LOW();
-  _delay_us(I2C_HALF_CLOCK);
-  SCL_LOW();
-}
-
-void i2c_stop(void) {
-  SDA_LOW();
-  _delay_us(I2C_HALF_CLOCK);
-  SCL_HIGH();
-  _delay_us(I2C_HIGH_TIME);
-  SDA_HIGH();
-}
-
-void i2c_reset(void) {
-  SDA_HIGH();
-  _delay_us(I2C_HALF_CLOCK);
-
-  for (uint8_t i = 0; i < 8; i++) {
-    SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
-    SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
-  }
-  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
-
-  /* generate start condition */
-  SDA_LOW(); _delay_us(I2C_HALF_CLOCK);
-
-  /* generate stop condition */
-  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
-  SDA_HIGH(); _delay_us(I2C_HALF_CLOCK);
-
-  /* down bus */
-  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
-  SDA_LOW(); _delay_us(I2C_HALF_CLOCK);
-}
-
-uint8_t i2c_transmit(uint8_t data) {
-  uint8_t nack = 0;
-  for (uint8_t mask = 0b10000000; mask > 0; mask >>= 1) {
-    if ((data & mask) != 0) {
-      SDA_HIGH();
-    } else {
-      SDA_LOW();
-    }
-    _delay_us(I2C_HALF_CLOCK);
-    SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
-    SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
-  }
-  /* Receive ACK */
-  SDA_HIGH();
-  DDRB &= ~(1<<DDB0); /* SDA as input. Pull-up is also enabled. */
-  _delay_us(I2C_HALF_CLOCK);
-  SCL_HIGH();
-  if ( ((1<<PINB0) & PINB) != 0) {
-    /* NACK */
-    nack = 1;
-  }
-  _delay_us(I2C_HIGH_TIME);
-  SCL_LOW();
-  DDRB |= (1<<DDB0); /* SDA as output. */
-  return nack;
-}
-
-uint8_t i2c_receive(uint8_t nack) {
-  uint8_t buf = 0b00000000;
-  SDA_HIGH();
-  DDRB &= ~(1<<DDB0); /* SDA as input. Pull-up is also enabled. */
-
-  for (uint8_t i = 0; i < 8; i++) {
-    buf <<= 1;
-    SCL_HIGH();
-    _delay_us(I2C_HIGH_TIME);
-    if ( ((1<<PINB0) & PINB) != 0) {
-      buf |= 1;
-    }
-    SCL_LOW();
-    _delay_us(I2C_HALF_CLOCK);
-  }
-
-  /* Send ACK */
-  DDRB |= (1<<DDB0); /* SDA as output. */
-  if (nack) {
-    SDA_HIGH();
-  } else {
-    SDA_LOW();
-  }
-  _delay_us(I2C_HALF_CLOCK);
-  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
-  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
-  return buf;
-}
-
-void i2c_set_read_address(uint16_t read_address) {
-  i2c_start();
-  i2c_transmit(0b10100000); /* control byte (write) */
-  i2c_transmit((uint8_t)(read_address >> 8)); /* high order address byte */
-  i2c_transmit((uint8_t)read_address); /* low order address byte */
-  i2c_start();
-  i2c_transmit(0b10100001); /* control byte (read) */
-}
-
-void i2c_end(void) {
-  i2c_receive(1);
-  i2c_stop();
-}
+uint16_t detect_countdown = 0;
+uint8_t pressed = 0;
 
 
-/* must be power of 2 */
+/*
+ * Ring buffer for reading a header
+ */
+
+// must be power of 2
 #define RING_BUF_SIZE (16)
 
 struct rom_ring_buffer {
@@ -229,6 +138,23 @@ uint16_t rom_read_from_buffer_2(uint8_t offset) {
   
   return data;
 }
+
+
+/*
+ * Sound streamer
+ *
+ * This is called every sample cycle.
+ */
+
+ISR(TIM0_COMPA_vect)
+{
+  OCR1B = fifo_read() >> 2;
+}
+
+
+/*
+ * Controller
+ */
 
 void play(void)
 {
@@ -411,6 +337,10 @@ unsupported:
 
 EMPTY_INTERRUPT(INT0_vect);
 
+/*
+ * Wake up and sleep
+ */
+
 int main(void) {
   PORTB |= (1<<PB2); /* INT0 pullup */
 
@@ -449,4 +379,119 @@ int main(void) {
 
     play();
   }
+}
+
+
+/*
+ * I2C routines
+ */
+
+void i2c_start(void) {
+  SDA_HIGH();
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH();
+  _delay_us(I2C_HIGH_TIME);
+  SDA_LOW();
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_LOW();
+}
+
+void i2c_stop(void) {
+  SDA_LOW();
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH();
+  _delay_us(I2C_HIGH_TIME);
+  SDA_HIGH();
+}
+
+void i2c_reset(void) {
+  SDA_HIGH();
+  _delay_us(I2C_HALF_CLOCK);
+
+  for (uint8_t i = 0; i < 8; i++) {
+    SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
+    SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  }
+  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
+
+  /* generate start condition */
+  SDA_LOW(); _delay_us(I2C_HALF_CLOCK);
+
+  /* generate stop condition */
+  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
+  SDA_HIGH(); _delay_us(I2C_HALF_CLOCK);
+
+  /* down bus */
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  SDA_LOW(); _delay_us(I2C_HALF_CLOCK);
+}
+
+uint8_t i2c_transmit(uint8_t data) {
+  uint8_t nack = 0;
+  for (uint8_t mask = 0b10000000; mask > 0; mask >>= 1) {
+    if ((data & mask) != 0) {
+      SDA_HIGH();
+    } else {
+      SDA_LOW();
+    }
+    _delay_us(I2C_HALF_CLOCK);
+    SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
+    SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  }
+  /* Receive ACK */
+  SDA_HIGH();
+  DDRB &= ~(1<<DDB0); /* SDA as input. Pull-up is also enabled. */
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH();
+  if ( ((1<<PINB0) & PINB) != 0) {
+    /* NACK */
+    nack = 1;
+  }
+  _delay_us(I2C_HIGH_TIME);
+  SCL_LOW();
+  DDRB |= (1<<DDB0); /* SDA as output. */
+  return nack;
+}
+
+uint8_t i2c_receive(uint8_t nack) {
+  uint8_t buf = 0b00000000;
+  SDA_HIGH();
+  DDRB &= ~(1<<DDB0); /* SDA as input. Pull-up is also enabled. */
+
+  for (uint8_t i = 0; i < 8; i++) {
+    buf <<= 1;
+    SCL_HIGH();
+    _delay_us(I2C_HIGH_TIME);
+    if ( ((1<<PINB0) & PINB) != 0) {
+      buf |= 1;
+    }
+    SCL_LOW();
+    _delay_us(I2C_HALF_CLOCK);
+  }
+
+  /* Send ACK */
+  DDRB |= (1<<DDB0); /* SDA as output. */
+  if (nack) {
+    SDA_HIGH();
+  } else {
+    SDA_LOW();
+  }
+  _delay_us(I2C_HALF_CLOCK);
+  SCL_HIGH(); _delay_us(I2C_HIGH_TIME);
+  SCL_LOW(); _delay_us(I2C_HALF_CLOCK);
+  return buf;
+}
+
+void i2c_set_read_address(uint16_t read_address) {
+  i2c_start();
+  i2c_transmit(0b10100000); /* control byte (write) */
+  i2c_transmit((uint8_t)(read_address >> 8)); /* high order address byte */
+  i2c_transmit((uint8_t)read_address); /* low order address byte */
+  i2c_start();
+  i2c_transmit(0b10100001); /* control byte (read) */
+}
+
+void i2c_end(void) {
+  i2c_receive(1);
+  i2c_stop();
 }
